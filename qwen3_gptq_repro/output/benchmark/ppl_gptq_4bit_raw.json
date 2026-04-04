@@ -1,0 +1,13 @@
+{
+  "label": "gptq_4bit_raw",
+  "ppl": 10.3845,
+  "total_tokens": 298862,
+  "elapsed_seconds": 37.62,
+  "model_dir": "/home/zhou/Documents/yangjia/zip/models/Qwen3-4B-Instruct-2507",
+  "quant_weights": "/home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/gptq_from_raw/qwen3-4b-instruct-2507-gptq-4bit.pt",
+  "seqlen": 2048,
+  "seed": 0,
+  "dtype": "float16",
+  "data_source": "local: /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/data/wikitext2",
+  "timestamp": "2026-04-04T21:07:50.493670"
+}

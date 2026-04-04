@@ -45,6 +45,22 @@ transformers >= 4.40
 datasets >= 2.0       # 用于加载 WikiText-2（在线或本地）
 ```
 
+### 2.1 先激活 conda 环境（必须）
+
+请在 **每次** 运行 benchmark 前先激活 `zip` 环境，否则很容易出现：
+- `transformers` 版本不匹配（如不识别 `qwen3`）
+- `torch` 变成 CPU 版（`torch.cuda.is_available() == False`）
+- 缺少 `datasets` 依赖
+
+```bash
+conda activate zip
+python -c "import os,torch; print('env=', os.environ.get('CONDA_DEFAULT_ENV')); print('torch=', torch.__version__); print('cuda=', torch.cuda.is_available())"
+```
+
+期望输出：
+- `env= zip`
+- `cuda= True`（若你要用 GPU）
+
 如果在离线环境中运行，需要提前下载 WikiText-2 数据集到本地（见第 6 节）。
 
 ---

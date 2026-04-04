@@ -19,4 +19,9 @@ qwen3_gptq_repro/data
 !gptq/
 !gptq/**
 
+!qwen3_gptq_repro/output/
+qwen3_gptq_repro/output/*/
+!qwen3_gptq_repro/output/benchmark/
+!qwen3_gptq_repro/output/benchmark/**
+
 .codebuddy/

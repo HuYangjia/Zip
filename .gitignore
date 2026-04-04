@@ -1,0 +1,20 @@
+# Python cache
+__pycache__/
+*.py[cod]
+
+# Model/checkpoint and quantization artifacts
+models/
+**/output/
+**/*.pt
+**/*.bin
+**/*.safetensors
+**/*.ckpt
+**/*.onnx
+qwen3_gptq_repro/data
+
+# Logs and temporary files
+*.log
+*.tmp
+
+!gptq/
+!gptq/**

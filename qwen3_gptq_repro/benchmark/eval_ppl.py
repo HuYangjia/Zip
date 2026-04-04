@@ -26,6 +26,7 @@ from datetime import datetime
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
@@ -89,6 +90,11 @@ def parse_args():
         choices=["float16", "bfloat16", "float32"],
         help="模型加载精度（默认 float16）。",
     )
+    parser.add_argument(
+        "--no-act-quant",
+        action="store_true",
+        help="禁用激活 INT4 量化模拟。默认启用 A4 激活量化，指定此参数可回退到纯 FP16 激活模式（用于对比实验或复现旧结果）。",
+    )
     return parser.parse_args()
 
 
@@ -143,7 +149,95 @@ def load_model(model_dir: str, quant_weights: str, dtype: torch.dtype):
 
 
 # ---------------------------------------------------------------------------
-# 3. WikiText-2 test set 数据加载
+# 3. A4 激活量化模拟（INT4 per-token 对称量化→反量化）
+# ---------------------------------------------------------------------------
+
+def fake_quantize_activation_int4(x: torch.Tensor) -> torch.Tensor:
+    """
+    对激活张量执行 INT4 per-token 对称量化→反量化（fake quantization）。
+
+    INT4 对称量化范围为 [-7, 7]（4-bit 有符号整数，排除 -8 以保持对称）。
+    对每个 token 独立计算 scale：
+        scale = max(|x|, dim=-1) / 7
+        x_q = clamp(round(x / scale), -7, 7)
+        x_dq = x_q * scale
+
+    Args:
+        x: 输入激活张量，shape [..., hidden_dim]
+
+    Returns:
+        x_dq: 量化→反量化后的激活张量，shape 与输入相同
+    """
+    # 计算 per-token scale：沿最后一个维度取绝对值最大值
+    x_abs_max = x.abs().amax(dim=-1, keepdim=True)  # [..., 1]
+    # 避免除零：当 abs_max 为 0 时，scale 设为 1（该 token 全零，量化后仍为零）
+    scale = x_abs_max / 7.0
+    scale = scale.clamp(min=1e-10)  # 防止除零
+
+    # 量化
+    x_q = (x / scale).round().clamp(-7, 7)
+    # 反量化
+    x_dq = x_q * scale
+
+    return x_dq
+
+
+def inject_activation_quant(model) -> list:
+    """
+    遍历模型所有 nn.Linear 层，注册 forward pre-hook 以注入 A4 激活量化。
+
+    在每次 nn.Linear 前向传播前，对输入激活执行 INT4 per-token 对称量化→反量化。
+    如果量化后出现 NaN/Inf，打印警告并跳过该层的激活量化，返回原始输入。
+
+    Args:
+        model: PyTorch 模型
+
+    Returns:
+        handles: 所有注册的 hook handle 列表，用于后续移除
+    """
+    handles = []
+    n_injected = 0
+
+    def _make_pre_hook(layer_name: str):
+        """为指定层创建 pre-hook 闭包。"""
+        def _pre_hook(module, args):
+            # args 是一个 tuple，第一个元素是输入激活
+            if len(args) == 0:
+                return args
+            x = args[0]
+            x_dq = fake_quantize_activation_int4(x)
+            # NaN/Inf 检测
+            if torch.isnan(x_dq).any() or torch.isinf(x_dq).any():
+                print(f"[warn] 激活量化后出现 NaN/Inf，跳过层: {layer_name}")
+                return args  # 返回原始输入
+            # 返回修改后的 args（替换第一个元素）
+            return (x_dq,) + args[1:]
+        return _pre_hook
+
+    for name, module in model.named_modules():
+        if isinstance(module, nn.Linear):
+            h = module.register_forward_pre_hook(_make_pre_hook(name))
+            handles.append(h)
+            n_injected += 1
+
+    print(f"[act_quant] 已注入 A4 激活量化 (INT4 per-token) 到 {n_injected} 个 nn.Linear 层")
+    return handles
+
+
+def remove_activation_quant(handles: list):
+    """
+    移除所有激活量化 hook。
+
+    Args:
+        handles: inject_activation_quant 返回的 handle 列表
+    """
+    for h in handles:
+        h.remove()
+    print(f"[act_quant] 已移除 {len(handles)} 个激活量化 hook")
+
+
+# ---------------------------------------------------------------------------
+# 4. WikiText-2 test set 数据加载
 # ---------------------------------------------------------------------------
 
 def load_wikitext2_test(tokenizer, local_wikitext2_dir: str = ""):
@@ -228,7 +322,7 @@ def _load_local_wikitext2_test(tokenizer, local_dir: str):
 
 
 # ---------------------------------------------------------------------------
-# 4. 滑动窗口 Perplexity 计算
+# 5. 滑动窗口 Perplexity 计算
 # ---------------------------------------------------------------------------
 
 @torch.no_grad()
@@ -298,7 +392,7 @@ def evaluate_ppl(model, input_ids: torch.Tensor, seqlen: int, device: torch.devi
 
 
 # ---------------------------------------------------------------------------
-# 5. 结果输出与保存
+# 6. 结果输出与保存
 # ---------------------------------------------------------------------------
 
 def print_results(label: str, ppl: float, total_tokens: int, elapsed: float):
@@ -327,6 +421,7 @@ def save_results_json(
     seed: int,
     dtype: str,
     data_source: str,
+    act_quant: str = "none",
 ):
     """将评测结果保存为 JSON 文件。"""
     out_path = Path(output_dir)
@@ -342,6 +437,7 @@ def save_results_json(
         "seqlen": seqlen,
         "seed": seed,
         "dtype": dtype,
+        "act_quant": act_quant,
         "data_source": data_source,
         "timestamp": datetime.now().isoformat(),
     }
@@ -365,7 +461,7 @@ def append_results_txt(output_dir: str, result: dict):
 
     # 表头（仅在文件不存在或为空时写入）
     header = (
-        f"{'Label':<30s}  {'PPL':>10s}  {'Tokens':>10s}  "
+        f"{'Label':<40s}  {'PPL':>10s}  {'ActQ':<6s}  {'Tokens':>10s}  "
         f"{'Time(s)':>10s}  {'Dtype':<10s}  {'Timestamp':<26s}  {'Quant Weights'}"
     )
     separator = "-" * len(header)
@@ -376,8 +472,10 @@ def append_results_txt(output_dir: str, result: dict):
     if not quant_w:
         quant_w = "(FP16 原始模型)"
 
+    act_q = result.get("act_quant", "none")
+
     line = (
-        f"{result['label']:<30s}  {result['ppl']:>10.4f}  {result['total_tokens']:>10d}  "
+        f"{result['label']:<40s}  {result['ppl']:>10.4f}  {act_q:<6s}  {result['total_tokens']:>10d}  "
         f"{result['elapsed_seconds']:>10.2f}  {result['dtype']:<10s}  "
         f"{result['timestamp']:<26s}  {quant_w}"
     )
@@ -425,6 +523,15 @@ def main():
     if seqlen != args.seqlen:
         print(f"[warn] --seqlen {args.seqlen} > model.seqlen {model.seqlen}，使用 {seqlen}")
 
+    # 注入 A4 激活量化（默认启用，--no-act-quant 可关闭）
+    act_quant_str = "none"
+    act_quant_handles = []
+    if not args.no_act_quant:
+        act_quant_handles = inject_activation_quant(model)
+        act_quant_str = "int4"
+    else:
+        print("[act_quant] 激活量化已禁用 (--no-act-quant)，使用 FP16 激活。")
+
     # 加载 WikiText-2 test set
     input_ids, data_source = load_wikitext2_test(tokenizer, args.local_wikitext2_dir)
 
@@ -432,6 +539,10 @@ def main():
     tick = time.time()
     ppl, total_tokens = evaluate_ppl(model, input_ids, seqlen, device)
     elapsed = time.time() - tick
+
+    # 移除激活量化 hook（确保不影响模型后续使用）
+    if act_quant_handles:
+        remove_activation_quant(act_quant_handles)
 
     # 输出结果到终端
     print_results(args.label, ppl, total_tokens, elapsed)
@@ -449,6 +560,7 @@ def main():
         seed=args.seed,
         dtype=args.dtype,
         data_source=data_source,
+        act_quant=act_quant_str,
     )
 
     # 追加写入 results.txt（汇总文件）

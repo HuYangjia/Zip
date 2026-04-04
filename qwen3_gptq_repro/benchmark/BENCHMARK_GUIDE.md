@@ -162,6 +162,75 @@ python benchmark/eval_ppl.py \
   --output-dir "${OUTPUT_DIR}/benchmark"
 ```
 
+### G. Percentile-GPTQ Tail Spill (改进版 Mode A)
+
+**Step 1: 量化**（从原始权重）
+
+```bash
+cd ${PROJECT_DIR}
+
+python qwen3_gptq_percentile_tail_spill.py \
+  --model-dir "${MODEL_DIR}" \
+  --output-dir "${OUTPUT_DIR}/exp_percentile_tail_spill/from_raw_k75_r16" \
+  --nsamples 32 --seqlen 1024 \
+  --groupsize 128 --percdamp 0.01 \
+  --true-sequential \
+  --tail-rank 16 --percentile-k 75.0 \
+  --local-wikitext2-dir "/path/to/wikitext2_local"
+```
+
+**Step 1b: 量化**（从 smooth 后的权重）
+
+```bash
+python qwen3_gptq_percentile_tail_spill.py \
+  --model-dir "${MODEL_DIR}" \
+  --output-dir "${OUTPUT_DIR}/exp_percentile_tail_spill/from_smooth_k75_r16" \
+  --init-state-dict "${OUTPUT_DIR}/smooth/smoothed_model_state_dict.pt" \
+  --nsamples 32 --seqlen 1024 \
+  --groupsize 128 --percdamp 0.01 \
+  --true-sequential \
+  --tail-rank 16 --percentile-k 75.0 \
+  --local-wikitext2-dir "/path/to/wikitext2_local"
+```
+
+**Step 1c: 对比实验**（使用标准 min/max Quantizer + Tail Spill）
+
+```bash
+python qwen3_gptq_percentile_tail_spill.py \
+  --model-dir "${MODEL_DIR}" \
+  --output-dir "${OUTPUT_DIR}/exp_percentile_tail_spill/from_raw_standard_r16" \
+  --nsamples 32 --seqlen 1024 \
+  --groupsize 128 --percdamp 0.01 \
+  --true-sequential \
+  --tail-rank 16 --use-standard-quantizer \
+  --local-wikitext2-dir "/path/to/wikitext2_local"
+```
+
+**Step 2: 评测 PPL**
+
+```bash
+# 从原始权重 + percentile k=75 + tail_rank=16
+python benchmark/eval_ppl.py \
+  --model-dir "${MODEL_DIR}" \
+  --quant-weights "${OUTPUT_DIR}/exp_percentile_tail_spill/from_raw_k75_r16/qwen3-4b-instruct-2507-gptq-4bit.pt" \
+  --label percentile_tail_spill_raw_k75_r16 \
+  --output-dir "${OUTPUT_DIR}/benchmark"
+
+# 从 smooth 权重 + percentile k=75 + tail_rank=16
+python benchmark/eval_ppl.py \
+  --model-dir "${MODEL_DIR}" \
+  --quant-weights "${OUTPUT_DIR}/exp_percentile_tail_spill/from_smooth_k75_r16/qwen3-4b-instruct-2507-gptq-4bit.pt" \
+  --label percentile_tail_spill_smooth_k75_r16 \
+  --output-dir "${OUTPUT_DIR}/benchmark"
+
+# 标准 Quantizer + Tail Spill（对比实验）
+python benchmark/eval_ppl.py \
+  --model-dir "${MODEL_DIR}" \
+  --quant-weights "${OUTPUT_DIR}/exp_percentile_tail_spill/from_raw_standard_r16/qwen3-4b-instruct-2507-gptq-4bit.pt" \
+  --label tail_spill_standard_r16 \
+  --output-dir "${OUTPUT_DIR}/benchmark"
+```
+
 ---
 
 ## 6. 为新实验添加评测

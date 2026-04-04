@@ -18,3 +18,5 @@ qwen3_gptq_repro/data
 
 !gptq/
 !gptq/**
+
+.codebuddy/

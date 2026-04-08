@@ -1,3 +1,5 @@
+> ⚠️ DEPRECATED: This instruction document has been superseded by W4A_BENCHMARK_V2.md
+
 # W4A4 Benchmark 升级 — 变更说明与运行命令
 
 > **本次升级核心变更**：所有 benchmark 评测默认启用 **A4 激活 INT4 量化模拟**，PPL 结果从 W4 升级为 **W4A4**。

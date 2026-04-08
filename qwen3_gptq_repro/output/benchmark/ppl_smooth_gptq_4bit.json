@@ -1,13 +1,14 @@
 {
   "label": "smooth_gptq_4bit",
-  "ppl": 10.8361,
+  "ppl": 5289.941,
   "total_tokens": 298862,
-  "elapsed_seconds": 37.9,
+  "elapsed_seconds": 56.27,
   "model_dir": "/home/zhou/Documents/yangjia/zip/models/Qwen3-4B-Instruct-2507",
   "quant_weights": "/home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/gptq_from_smooth/qwen3-4b-instruct-2507-gptq-4bit.pt",
   "seqlen": 2048,
   "seed": 0,
   "dtype": "float16",
+  "act_quant": "int4",
   "data_source": "local: /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/data/wikitext2",
-  "timestamp": "2026-04-04T21:08:53.352636"
+  "timestamp": "2026-04-05T00:32:51.112485"
 }

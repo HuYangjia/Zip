@@ -1,0 +1,14 @@
+WikiText-2 Perplexity Benchmark Results
+=========================================================================================================================
+Label                                  PPL      Tokens     Time(s)  Dtype       Timestamp                   Quant Weights
+-------------------------------------------------------------------------------------------------------------------------
+percentile_tail_modeA_k75_r16   457776.4102      298862       37.23  float16     2026-04-04T21:03:10.783663  /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/exp_percentile_tail/modeA_k75_r16_int8/qwen3-4b-instruct-2507-percentile-tail.pt
+fp16_baseline                      10.0449      298862       36.91  float16     2026-04-04T21:06:52.006679  (FP16 原始模型)
+gptq_4bit_raw                      10.3845      298862       37.62  float16     2026-04-04T21:07:50.493670  /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/gptq_from_raw/qwen3-4b-instruct-2507-gptq-4bit.pt
+smooth_gptq_4bit                   10.8361      298862       37.90  float16     2026-04-04T21:08:53.352636  /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/gptq_from_smooth/qwen3-4b-instruct-2507-gptq-4bit.pt
+tail_mixed_5pct                    10.2043      298862       38.01  float16     2026-04-04T21:09:49.648846  /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/exp_tail_mixed/tail5p_int8_gptq4/qwen3-4b-instruct-2507-gptq-4bit.pt
+percentile_tail_modeB_k75_r16      10.0454      298862       37.92  float16     2026-04-04T21:10:53.309217  /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/exp_percentile_tail/modeB_k75_r16_int8/qwen3-4b-instruct-2507-percentile-tail.pt
+percentile_tail_spill_raw_k75_r16     86.8504      298862       37.84  float16     2026-04-04T22:52:04.723463  /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/exp_percentile_tail_spill/from_raw_k75_r16/qwen3-4b-instruct-2507-gptq-4bit.pt
+percentile_tail_spill_smooth_k75_r16    106.0806      298862       38.13  float16     2026-04-04T22:52:59.557544  /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/exp_percentile_tail_spill/from_smooth_k75_r16/qwen3-4b-instruct-2507-gptq-4bit.pt
+tail_spill_standard_r16            10.2282      298862       38.13  float16     2026-04-04T22:53:55.819047  /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/exp_percentile_tail_spill/from_raw_standard_r16/qwen3-4b-instruct-2507-gptq-4bit.pt
+

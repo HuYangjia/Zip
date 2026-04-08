@@ -11,6 +11,7 @@
 | 文件 | 状态 | 说明 |
 |------|------|------|
 | [W4A_BENCHMARK_V2.md](./W4A_BENCHMARK_V2.md) | ✅ **当前有效** | V2 版 20 个实验的完整执行指令，包含路径配置、参数参考表、实验命令和一键运行脚本 |
+| [W4A_BENCHMARK_V3_HIGH_RANK.md](./W4A_BENCHMARK_V3_HIGH_RANK.md) | ✅ **当前有效** | V3 补充实验：Percentile Tail Spill 高 Rank (r64/r128) 的权重生成 + 16 个 PPL 评测指令 |
 | [_deprecated/W4A4_BENCHMARK_UPGRADE.md](./_deprecated/W4A4_BENCHMARK_UPGRADE.md) | ⚠️ 已过时 | V1 版 W4A4 升级变更说明 + 全量评测命令，已被 V2 取代 |
 
 ## 注意事项

@@ -1,0 +1,17 @@
+{
+  "label": "ptab_k75_r128_A4g128_downA8",
+  "ppl": 435.2649,
+  "total_tokens": 298862,
+  "elapsed_seconds": 52.98,
+  "model_dir": "/home/zhou/Documents/yangjia/zip/models/Qwen3-4B-Instruct-2507",
+  "quant_weights": "/home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/exp_tail_absorb/from_smooth_k75_r128/qwen3-4b-instruct-2507-gptq-4bit.pt",
+  "seqlen": 2048,
+  "seed": 0,
+  "dtype": "float16",
+  "act_quant": "int4-g128+down_proj:int8",
+  "act_quant_overrides": {
+    "down_proj": "int8"
+  },
+  "data_source": "local: /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/data/wikitext2",
+  "timestamp": "2026-04-08T21:15:29.269177"
+}

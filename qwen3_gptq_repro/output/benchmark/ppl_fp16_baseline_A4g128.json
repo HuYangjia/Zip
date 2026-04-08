@@ -1,14 +1,15 @@
 {
-  "label": "fp16_baseline",
-  "ppl": 10.0449,
+  "label": "fp16_baseline_A4g128",
+  "ppl": 14.1556,
   "total_tokens": 298862,
-  "elapsed_seconds": 37.5,
+  "elapsed_seconds": 56.98,
   "model_dir": "/home/zhou/Documents/yangjia/zip/models/Qwen3-4B-Instruct-2507",
   "quant_weights": "",
   "seqlen": 2048,
   "seed": 0,
   "dtype": "float16",
-  "act_quant": "none",
+  "act_quant": "int4-g128",
+  "act_quant_overrides": null,
   "data_source": "local: /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/data/wikitext2",
-  "timestamp": "2026-04-05T00:30:19.294061"
+  "timestamp": "2026-04-08T15:59:07.574145"
 }

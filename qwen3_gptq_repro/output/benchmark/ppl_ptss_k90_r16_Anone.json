@@ -1,14 +1,15 @@
 {
-  "label": "percentile_tail_spill_smooth_k90_r16",
-  "ppl": 15610.0024,
+  "label": "ptss_k90_r16_Anone",
+  "ppl": 34.6914,
   "total_tokens": 298862,
-  "elapsed_seconds": 56.4,
+  "elapsed_seconds": 37.99,
   "model_dir": "/home/zhou/Documents/yangjia/zip/models/Qwen3-4B-Instruct-2507",
   "quant_weights": "/home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/exp_percentile_tail_spill/from_smooth_k90_r16/qwen3-4b-instruct-2507-gptq-4bit.pt",
   "seqlen": 2048,
   "seed": 0,
   "dtype": "float16",
-  "act_quant": "int4",
+  "act_quant": "none",
+  "act_quant_overrides": null,
   "data_source": "local: /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/data/wikitext2",
-  "timestamp": "2026-04-05T00:41:03.459263"
+  "timestamp": "2026-04-08T16:14:15.036648"
 }

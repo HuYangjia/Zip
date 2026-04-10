@@ -2,7 +2,7 @@
   "label": "fp16_baseline_Anone",
   "ppl": 10.0449,
   "total_tokens": 298862,
-  "elapsed_seconds": 37.08,
+  "elapsed_seconds": 37.26,
   "model_dir": "/home/zhou/Documents/yangjia/zip/models/Qwen3-4B-Instruct-2507",
   "quant_weights": "",
   "seqlen": 2048,
@@ -11,5 +11,5 @@
   "act_quant": "none",
   "act_quant_overrides": null,
   "data_source": "local: /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/data/wikitext2",
-  "timestamp": "2026-04-08T15:57:00.204780"
+  "timestamp": "2026-04-10T11:53:14.117988"
 }

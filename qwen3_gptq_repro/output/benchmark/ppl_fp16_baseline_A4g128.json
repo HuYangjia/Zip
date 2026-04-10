@@ -2,7 +2,7 @@
   "label": "fp16_baseline_A4g128",
   "ppl": 14.1556,
   "total_tokens": 298862,
-  "elapsed_seconds": 56.98,
+  "elapsed_seconds": 56.39,
   "model_dir": "/home/zhou/Documents/yangjia/zip/models/Qwen3-4B-Instruct-2507",
   "quant_weights": "",
   "seqlen": 2048,
@@ -11,5 +11,5 @@
   "act_quant": "int4-g128",
   "act_quant_overrides": null,
   "data_source": "local: /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/data/wikitext2",
-  "timestamp": "2026-04-08T15:59:07.574145"
+  "timestamp": "2026-04-10T11:55:18.842413"
 }

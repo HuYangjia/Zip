@@ -1,15 +1,15 @@
 {
-  "label": "stdts_r16_Anone",
-  "ppl": 10.2189,
+  "label": "smooth_ta_r64_noact_Anone",
+  "ppl": 10.3909,
   "total_tokens": 298862,
-  "elapsed_seconds": 38.01,
+  "elapsed_seconds": 38.35,
   "model_dir": "/home/zhou/Documents/yangjia/zip/models/Qwen3-4B-Instruct-2507",
-  "quant_weights": "/home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/exp_standard_tail_spill/from_raw_r16/qwen3-4b-instruct-2507-gptq-4bit.pt",
+  "quant_weights": "/home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/exp_smooth_tail_absorb/from_smooth_r64_noact/qwen3-4b-instruct-2507-gptq-4bit.pt",
   "seqlen": 2048,
   "seed": 0,
   "dtype": "float16",
   "act_quant": "none",
   "act_quant_overrides": null,
   "data_source": "local: /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/data/wikitext2",
-  "timestamp": "2026-04-10T12:05:20.916704"
+  "timestamp": "2026-04-10T16:26:54.888061"
 }

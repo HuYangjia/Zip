@@ -5,7 +5,9 @@
 
 ---
 
-## 变体总数：10 种
+## 变体总数：22 种
+
+### V1-V3 变体（#1-#10）
 
 | # | 变体名称 | 权重量化 | 激活量化 | 实现脚本 | PPL (W4A4) |
 |---|---------|---------|---------|---------|-----------|
@@ -20,7 +22,49 @@
 | 9 | Percentile Tail Spill (smooth, k=75, r=16) | INT4 (Smooth + Percentile GPTQ + tail spill) + INT8 (tail) | INT4 | `qwen3_gptq_percentile_tail_spill.py` | 11763.78 |
 | 10 | Percentile Tail Spill (smooth, k=90, r=16) | INT4 (Smooth + Percentile GPTQ + tail spill) + INT8 (tail) | INT4 | `qwen3_gptq_percentile_tail_spill.py` | 15610.00 |
 
-> **注意**：PPL 数值来自 W4A4 评测（权重 INT4 + 激活 INT4 per-token 对称量化模拟），数值较高是因为 A4 激活量化引入了额外误差。
+> **注意**：变体 #1-#10 的 PPL 数值来自 W4A4 评测（权重 INT4 + 激活 INT4 per-token 对称量化模拟），数值较高是因为 A4 激活量化引入了额外误差。
+
+### V5 变体（#11-#13）— Standard Tail Spill (from raw)
+
+| # | 变体名称 | 权重量化 | 实现脚本 | PPL (Anone) |
+|---|---------|---------|---------|-------------|
+| 11 | Std Tail Spill (raw, r=16) | INT4 (标准 GPTQ) + INT8 (tail) | `qwen3_gptq_percentile_tail_spill.py` | — |
+| 12 | Std Tail Spill (raw, r=64) | INT4 (标准 GPTQ) + INT8 (tail) | `qwen3_gptq_percentile_tail_spill.py` | — |
+| 13 | Std Tail Spill (raw, r=128) | INT4 (标准 GPTQ) + INT8 (tail) | `qwen3_gptq_percentile_tail_spill.py` | — |
+
+> **注意**：V5 实验未进行 PPL 评测，数据不可用。
+
+### V6 变体（#14-#16）— Smooth + Standard Tail Spill
+
+| # | 变体名称 | 权重量化 | 实现脚本 | PPL (Anone) |
+|---|---------|---------|---------|-------------|
+| 14 | Smooth + Std Tail Spill (r=16) | INT4 (Smooth + 标准 GPTQ) + INT8 (tail) | `qwen3_gptq_percentile_tail_spill.py` | 10.4404 |
+| 15 | Smooth + Std Tail Spill (r=64) | INT4 (Smooth + 标准 GPTQ) + INT8 (tail) | `qwen3_gptq_percentile_tail_spill.py` | 10.6128 |
+| 16 | Smooth + Std Tail Spill (r=128) | INT4 (Smooth + 标准 GPTQ) + INT8 (tail) | `qwen3_gptq_percentile_tail_spill.py` | 11.1749 |
+
+> 数据来源：`output/benchmark/results_smooth_stdts.txt`
+
+### V7 变体（#17-#22）— Smooth + Tail Absorb
+
+**act-order ON（#17-#19）：**
+
+| # | 变体名称 | 权重量化 | 实现脚本 | PPL (Anone) |
+|---|---------|---------|---------|-------------|
+| 17 | Smooth + Tail Absorb (r=16, act-order ON) | INT4 (Smooth + 标准 GPTQ) + INT8 (tail, 误差传播) | `qwen3_gptq_tail_absorb.py` | 10.3428 |
+| 18 | Smooth + Tail Absorb (r=64, act-order ON) | INT4 (Smooth + 标准 GPTQ) + INT8 (tail, 误差传播) | `qwen3_gptq_tail_absorb.py` | 10.4042 |
+| 19 | Smooth + Tail Absorb (r=128, act-order ON) | INT4 (Smooth + 标准 GPTQ) + INT8 (tail, 误差传播) | `qwen3_gptq_tail_absorb.py` | 10.4184 |
+
+**act-order OFF（#20-#22）：**
+
+| # | 变体名称 | 权重量化 | 实现脚本 | PPL (Anone) |
+|---|---------|---------|---------|-------------|
+| 20 | Smooth + Tail Absorb (r=16, act-order OFF) | INT4 (Smooth + 标准 GPTQ) + INT8 (tail, 误差传播) | `qwen3_gptq_tail_absorb.py` | 10.3846 |
+| 21 | Smooth + Tail Absorb (r=64, act-order OFF) | INT4 (Smooth + 标准 GPTQ) + INT8 (tail, 误差传播) | `qwen3_gptq_tail_absorb.py` | 10.3909 |
+| 22 | Smooth + Tail Absorb (r=128, act-order OFF) | INT4 (Smooth + 标准 GPTQ) + INT8 (tail, 误差传播) | `qwen3_gptq_tail_absorb.py` | 10.3949 |
+
+> 数据来源：`output/benchmark/results_smooth_tail_absorb.txt`
+>
+> **PPL 列说明**：变体 #1-#10 的 PPL 来自 W4A4 评测（激活 INT4）；变体 #11-#22 的 PPL 来自 Anone 评测（无激活量化）。完整的多配置 PPL 数据见 `docs/analysis/ALL_WORK_SUMMARY.md` 第 12 节。
 
 ---
 
@@ -178,6 +222,159 @@
 
 ---
 
+### 11. Std Tail Spill (raw, r=16)
+
+- **脚本**：[qwen3_gptq_percentile_tail_spill.py](/Users/yangjiahu/Desktop/workspace/HKUST/Zip/qwen3_gptq_repro/qwen3_gptq_percentile_tail_spill.py) + [gptq_tail_spill.py](/Users/yangjiahu/Desktop/workspace/HKUST/Zip/qwen3_gptq_repro/gptq_tail_spill.py)
+- **架构**：
+  - 使用 `GPTQTailSpill` 核心类
+  - 从 **原始 FP16 权重** 出发
+  - Main 列：**标准 min/max Quantizer** + GPTQ 4-bit 量化 + Hessian 误差补偿
+  - Tail 列（最后 16 列）：跳过量化，保留浮点值，**误差不传播**
+  - 最后对 tail 列做 INT8 per-row 对称量化
+- **功能**：V5 对照实验基线 — 使用标准 Quantizer（非 Percentile）+ Tail Spill，从原始权重出发
+- **核心参数**：`--tail-rank 16`，`--use-standard-quantizer`
+- **输出产物**：`output/exp_standard_tail_spill/from_raw_r16/qwen3-4b-instruct-2507-gptq-4bit.pt`
+- **PPL**：未评测
+
+---
+
+### 12. Std Tail Spill (raw, r=64)
+
+- **脚本**：同变体 11
+- **架构**：与变体 11 完全相同，唯一区别是 **tail_rank=64**（更多列划入 tail 区域）
+- **功能**：V5 rank 消融实验 — 对比 r=16 vs r=64 的效果
+- **核心参数**：`--tail-rank 64`，`--use-standard-quantizer`
+- **输出产物**：`output/exp_standard_tail_spill/from_raw_r64/qwen3-4b-instruct-2507-gptq-4bit.pt`
+- **PPL**：未评测
+
+---
+
+### 13. Std Tail Spill (raw, r=128)
+
+- **脚本**：同变体 11
+- **架构**：与变体 11 完全相同，唯一区别是 **tail_rank=128**
+- **功能**：V5 rank 消融实验 — 对比 r=16 vs r=128 的效果
+- **核心参数**：`--tail-rank 128`，`--use-standard-quantizer`
+- **输出产物**：`output/exp_standard_tail_spill/from_raw_r128/qwen3-4b-instruct-2507-gptq-4bit.pt`
+- **PPL**：未评测
+
+---
+
+### 14. Smooth + Std Tail Spill (r=16)
+
+- **脚本**：[qwen3_smooth.py](/Users/yangjiahu/Desktop/workspace/HKUST/Zip/qwen3_gptq_repro/qwen3_smooth.py) → [qwen3_gptq_percentile_tail_spill.py](/Users/yangjiahu/Desktop/workspace/HKUST/Zip/qwen3_gptq_repro/qwen3_gptq_percentile_tail_spill.py) + [gptq_tail_spill.py](/Users/yangjiahu/Desktop/workspace/HKUST/Zip/qwen3_gptq_repro/gptq_tail_spill.py)
+- **架构**：两阶段流水线
+  1. **SmoothQuant 预处理**（`qwen3_smooth.py`）：alpha=1 平滑激活 outlier
+  2. **标准 Tail Spill 量化**（`qwen3_gptq_percentile_tail_spill.py --use-standard-quantizer --init-state-dict`）：
+     - 加载 smooth 后的 state_dict
+     - Main 列：标准 GPTQ 4-bit + Hessian 误差补偿
+     - Tail 列（最后 16 列）：跳过量化 → INT8 per-row 对称量化
+- **功能**：V6 实验 — 验证 SmoothQuant + 标准 Tail Spill 的组合效果
+- **核心参数**：`--tail-rank 16`，`--use-standard-quantizer`，`--init-state-dict`
+- **输出产物**：`output/exp_standard_tail_spill/from_smooth_r16/qwen3-4b-instruct-2507-gptq-4bit.pt`
+- **PPL (Anone)**：10.4404 | **PPL (A8)**：10.7206 | **PPL (A4g128)**：13.3974 | **PPL (A4g128+down:int8)**：12.7426
+- **实验结果文件**：`output/benchmark/results_smooth_stdts.txt`
+
+---
+
+### 15. Smooth + Std Tail Spill (r=64)
+
+- **脚本**：同变体 14
+- **架构**：与变体 14 完全相同，唯一区别是 **tail_rank=64**
+- **功能**：V6 rank 消融实验 — 对比 r=16 vs r=64
+- **核心参数**：`--tail-rank 64`，`--use-standard-quantizer`，`--init-state-dict`
+- **输出产物**：`output/exp_standard_tail_spill/from_smooth_r64/qwen3-4b-instruct-2507-gptq-4bit.pt`
+- **PPL (Anone)**：10.6128 | **PPL (A8)**：10.9005 | **PPL (A4g128)**：13.5311 | **PPL (A4g128+down:int8)**：12.8757
+- **⚠️ 发现 rank-PPL 反转**：r=64 的 PPL (10.61) 比 r=16 (10.44) 更差
+
+---
+
+### 16. Smooth + Std Tail Spill (r=128)
+
+- **脚本**：同变体 14
+- **架构**：与变体 14 完全相同，唯一区别是 **tail_rank=128**
+- **功能**：V6 rank 消融实验 — 对比 r=16 vs r=128
+- **核心参数**：`--tail-rank 128`，`--use-standard-quantizer`，`--init-state-dict`
+- **输出产物**：`output/exp_standard_tail_spill/from_smooth_r128/qwen3-4b-instruct-2507-gptq-4bit.pt`
+- **PPL (Anone)**：11.1749 | **PPL (A8)**：11.5178 | **PPL (A4g128)**：14.7505 | **PPL (A4g128+down:int8)**：14.0515
+- **⚠️ rank-PPL 反转严重**：r=128 的 PPL (11.17) 远差于 r=16 (10.44)，根因为 `GPTQTailSpill` 的 tail 列不传播误差
+
+---
+
+### 17. Smooth + Tail Absorb (r=16, act-order ON)
+
+- **脚本**：[qwen3_smooth.py](/Users/yangjiahu/Desktop/workspace/HKUST/Zip/qwen3_gptq_repro/qwen3_smooth.py) → [qwen3_gptq_tail_absorb.py](/Users/yangjiahu/Desktop/workspace/HKUST/Zip/qwen3_gptq_repro/qwen3_gptq_tail_absorb.py) + [gptq_tail_absorb.py](/Users/yangjiahu/Desktop/workspace/HKUST/Zip/qwen3_gptq_repro/gptq_tail_absorb.py)
+- **架构**：两阶段流水线
+  1. **SmoothQuant 预处理**（`qwen3_smooth.py`）：alpha=1 平滑激活 outlier
+  2. **Tail Absorb 量化**（`qwen3_gptq_tail_absorb.py --use-standard-quantizer --init-state-dict --act-order`）：
+     - 加载 smooth 后的 state_dict
+     - 使用 `GPTQTailAbsorb` 核心类
+     - Main 列：标准 GPTQ 4-bit + Hessian 误差补偿
+     - Tail 列（最后 16 列）：**INT8 fake-quant + 误差正常传播**
+     - 启用 act-order（activation-order 启发式列排序）
+- **功能**：V7 修复版 — 使用 Tail Absorb 替代 Tail Spill，修复误差传播问题
+- **核心参数**：`--tail-rank 16`，`--use-standard-quantizer`，`--init-state-dict`，`--act-order`
+- **输出产物**：`output/exp_smooth_tail_absorb/from_smooth_r16/qwen3-4b-instruct-2507-gptq-4bit.pt`
+- **PPL (Anone)**：10.3428 ⭐ | **PPL (A8)**：10.6156 | **PPL (A4g128)**：13.2699 | **PPL (A4g128+down:int8)**：12.6241
+- **实验结果文件**：`output/benchmark/results_smooth_tail_absorb.txt`
+
+---
+
+### 18. Smooth + Tail Absorb (r=64, act-order ON)
+
+- **脚本**：同变体 17
+- **架构**：与变体 17 完全相同，唯一区别是 **tail_rank=64**
+- **功能**：V7 rank 消融实验 — 对比 r=16 vs r=64（act-order ON）
+- **核心参数**：`--tail-rank 64`，`--use-standard-quantizer`，`--init-state-dict`，`--act-order`
+- **输出产物**：`output/exp_smooth_tail_absorb/from_smooth_r64/qwen3-4b-instruct-2507-gptq-4bit.pt`
+- **PPL (Anone)**：10.4042 | **PPL (A8)**：10.6748 | **PPL (A4g128)**：13.3250 | **PPL (A4g128+down:int8)**：12.6773
+
+---
+
+### 19. Smooth + Tail Absorb (r=128, act-order ON)
+
+- **脚本**：同变体 17
+- **架构**：与变体 17 完全相同，唯一区别是 **tail_rank=128**
+- **功能**：V7 rank 消融实验 — 对比 r=16 vs r=128（act-order ON）
+- **核心参数**：`--tail-rank 128`，`--use-standard-quantizer`，`--init-state-dict`，`--act-order`
+- **输出产物**：`output/exp_smooth_tail_absorb/from_smooth_r128/qwen3-4b-instruct-2507-gptq-4bit.pt`
+- **PPL (Anone)**：10.4184 | **PPL (A8)**：10.6897 | **PPL (A4g128)**：13.3127 | **PPL (A4g128+down:int8)**：12.6651
+
+---
+
+### 20. Smooth + Tail Absorb (r=16, act-order OFF)
+
+- **脚本**：同变体 17（但使用 `--no-act-order`）
+- **架构**：与变体 17 完全相同，唯一区别是 **关闭 act-order**（不做 activation-order 列排序）
+- **功能**：V7 act-order 消融实验 — 对比 act-order ON vs OFF（r=16）
+- **核心参数**：`--tail-rank 16`，`--use-standard-quantizer`，`--init-state-dict`，`--no-act-order`
+- **输出产物**：`output/exp_smooth_tail_absorb/from_smooth_r16_noact/qwen3-4b-instruct-2507-gptq-4bit.pt`
+- **PPL (Anone)**：10.3846 | **PPL (A8)**：10.6643 | **PPL (A4g128)**：13.1251 | **PPL (A4g128+down:int8)**：12.5639
+
+---
+
+### 21. Smooth + Tail Absorb (r=64, act-order OFF)
+
+- **脚本**：同变体 17（但使用 `--no-act-order`）
+- **架构**：与变体 20 完全相同，唯一区别是 **tail_rank=64**
+- **功能**：V7 act-order 消融实验 — 对比 act-order ON vs OFF（r=64）
+- **核心参数**：`--tail-rank 64`，`--use-standard-quantizer`，`--init-state-dict`，`--no-act-order`
+- **输出产物**：`output/exp_smooth_tail_absorb/from_smooth_r64_noact/qwen3-4b-instruct-2507-gptq-4bit.pt`
+- **PPL (Anone)**：10.3909 | **PPL (A8)**：10.6664 | **PPL (A4g128)**：13.1782 | **PPL (A4g128+down:int8)**：12.6008
+
+---
+
+### 22. Smooth + Tail Absorb (r=128, act-order OFF)
+
+- **脚本**：同变体 17（但使用 `--no-act-order`）
+- **架构**：与变体 20 完全相同，唯一区别是 **tail_rank=128**
+- **功能**：V7 act-order 消融实验 — 对比 act-order ON vs OFF（r=128）
+- **核心参数**：`--tail-rank 128`，`--use-standard-quantizer`，`--init-state-dict`，`--no-act-order`
+- **输出产物**：`output/exp_smooth_tail_absorb/from_smooth_r128_noact/qwen3-4b-instruct-2507-gptq-4bit.pt`
+- **PPL (Anone)**：10.3949 | **PPL (A8)**：10.6680 | **PPL (A4g128)**：13.2016 | **PPL (A4g128+down:int8)**：12.6254
+
+---
+
 ## 架构关系图
 
 ```mermaid
@@ -192,6 +389,10 @@ graph TD
     FP16 --> SPILL_RAW[变体8: Percentile Tail Spill raw]
     SMOOTH --> SPILL_SMOOTH75[变体9: Percentile Tail Spill smooth k=75]
     SMOOTH --> SPILL_SMOOTH90[变体10: Percentile Tail Spill smooth k=90]
+    FP16 --> STDTS_RAW16[变体11-13: Std Tail Spill raw r=16/64/128]
+    SMOOTH --> STDTS_SMOOTH[变体14-16: Smooth + Std Tail Spill r=16/64/128]
+    SMOOTH --> TA_ACT_ON[变体17-19: Smooth + Tail Absorb act-ON r=16/64/128]
+    SMOOTH --> TA_ACT_OFF[变体20-22: Smooth + Tail Absorb act-OFF r=16/64/128]
 
     style FP16 fill:#e1f5fe
     style SMOOTH fill:#fff3e0
@@ -204,6 +405,10 @@ graph TD
     style SPILL_RAW fill:#ede7f6
     style SPILL_SMOOTH75 fill:#ede7f6
     style SPILL_SMOOTH90 fill:#ede7f6
+    style STDTS_RAW16 fill:#e0f2f1
+    style STDTS_SMOOTH fill:#e0f2f1
+    style TA_ACT_ON fill:#fff9c4
+    style TA_ACT_OFF fill:#fff9c4
 ```
 
 ---
@@ -230,7 +435,7 @@ graph TD
 | 变体 5 (Mode A) | 无 | Percentile uniform INT4 | 约束吸收 + 最小二乘投影 | INT8 |
 | 变体 6 (Mode B) | 无 | GPTQ 4-bit | 约束吸收 + 最小二乘投影 | INT8 |
 
-### 第四类：GPTQ Tail Spill（改进版 Mode A）
+### 第四类：GPTQ Tail Spill（误差不传播版）
 
 | 变体 | 预处理 | Quantizer | 误差溢出机制 | Tail 列处理 |
 |------|--------|-----------|-------------|------------|
@@ -238,6 +443,24 @@ graph TD
 | 变体 8 | 无 | Percentile k=75 | GPTQ 逐列误差补偿自然溢出 | INT8 |
 | 变体 9 | SmoothQuant | Percentile k=75 | GPTQ 逐列误差补偿自然溢出 | INT8 |
 | 变体 10 | SmoothQuant | Percentile k=90 | GPTQ 逐列误差补偿自然溢出 | INT8 |
+| 变体 11-13 | 无 | 标准 min/max | GPTQ 逐列误差补偿自然溢出 | INT8 |
+| 变体 14-16 | SmoothQuant | 标准 min/max | GPTQ 逐列误差补偿自然溢出 | INT8 |
+
+> **特点**：Tail 列跳过量化，保留浮点值，误差不传播。V6 实验发现 rank 越大 PPL 越差（反转 bug）。
+
+### 第五类：GPTQ Tail Absorb（误差正常传播版）
+
+| 变体 | 预处理 | Quantizer | Tail 列处理 | act-order |
+|------|--------|-----------|------------|----------|
+| 变体 17 | SmoothQuant | 标准 min/max | INT8 fake-quant + 误差传播 | ON |
+| 变体 18 | SmoothQuant | 标准 min/max | INT8 fake-quant + 误差传播 | ON |
+| 变体 19 | SmoothQuant | 标准 min/max | INT8 fake-quant + 误差传播 | ON |
+| 变体 20 | SmoothQuant | 标准 min/max | INT8 fake-quant + 误差传播 | OFF |
+| 变体 21 | SmoothQuant | 标准 min/max | INT8 fake-quant + 误差传播 | OFF |
+| 变体 22 | SmoothQuant | 标准 min/max | INT8 fake-quant + 误差传播 | OFF |
+
+> **特点**：Tail 列做 INT8 fake-quant（量化后立即反量化），量化误差通过 Hessian 补偿正常传播。修复了第四类的 rank-PPL 反转问题。
+> 与第四类（Tail Spill）的核心区别：Tail Absorb 的 tail 列会产生量化误差并传播，而 Tail Spill 的 tail 列不产生误差。
 
 ---
 
@@ -247,7 +470,8 @@ graph TD
 |------|------|------|
 | `GPTQ` | `gptq/gptq.py`（外部库） | 标准 GPTQ 量化核心，基于 Hessian 逆的逐列量化 |
 | `Quantizer` | `gptq/quant.py`（外部库） | 标准 min/max 量化器，确定量化 scale 和 zero point |
-| `GPTQTailSpill` | `gptq_tail_spill.py` | 修改版 GPTQ，支持 tail 列跳过量化（误差自然溢出） |
+| `GPTQTailSpill` | `gptq_tail_spill.py` | 修改版 GPTQ，支持 tail 列跳过量化（误差自然溢出，不传播） |
+| `GPTQTailAbsorb` | `gptq_tail_absorb.py` | 修改版 GPTQ，支持 tail 列 INT8 fake-quant（误差正常传播） |
 | `PercentileQuantizer` | `gptq_tail_spill.py` | 用 percentile 替代 min/max 确定量化范围，截断 outlier |
 | `quantize_tail_int8` | `gptq_tail_spill.py` | 对 tail 列做 per-row INT8 对称量化 |
 | `eval_ppl.py` | `benchmark/eval_ppl.py` | WikiText-2 PPL 评测，支持 W4A4 激活量化模拟 |

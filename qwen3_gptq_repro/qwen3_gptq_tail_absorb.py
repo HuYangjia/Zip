@@ -85,6 +85,9 @@ def parse_args():
                         help="Percentile (0-100) for determining quantization scale of main columns.")
     parser.add_argument("--use-standard-quantizer", action="store_true",
                         help="Use standard min/max Quantizer instead of PercentileQuantizer (for ablation).")
+    parser.add_argument("--head-absorb", action="store_true",
+                        help="Enable Head Absorb mode (V8): INT8 quantize the most important columns "
+                        "(first tail_rank columns after actorder sorting) instead of the least important ones.")
     return parser.parse_args()
 
 
@@ -104,9 +107,13 @@ def qwen3_sequential_tail_absorb(model, dataloader, dev: torch.device, args):
     # act_order 默认启用，除非用户显式禁用
     act_order = not args.no_act_order
 
+    head_absorb = getattr(args, 'head_absorb', False)
+    mode_str = "Head Absorb (V8)" if head_absorb else "Tail Absorb (V7)"
+
     print("=" * 60)
-    print("Starting Tail Absorb (GPTQ + INT8 tail FakeQuant) ...")
+    print(f"Starting {mode_str} (GPTQ + INT8 FakeQuant) ...")
     print(f"  percentile_k={args.percentile_k}, tail_rank={args.tail_rank}")
+    print(f"  head_absorb={head_absorb}")
     print(f"  groupsize={args.groupsize}, percdamp={args.percdamp}, "
           f"act_order={act_order}")
     print(f"  use_standard_quantizer={args.use_standard_quantizer}")
@@ -242,7 +249,7 @@ def qwen3_sequential_tail_absorb(model, dataloader, dev: torch.device, args):
                 print(f"\nLayer {i} -> {name} (d_in={d_in}, d_out={d_out}, "
                       f"tail_rank={args.tail_rank})")
 
-                # 调用 Tail Absorb 版 fasterquant
+                # 调用 Tail/Head Absorb 版 fasterquant
                 # INT8 量化已在 fasterquant 内部完成，无需外部后处理
                 absorb_stats = gptq[name].fasterquant(
                     percdamp=args.percdamp,
@@ -250,6 +257,7 @@ def qwen3_sequential_tail_absorb(model, dataloader, dev: torch.device, args):
                     actorder=act_order,
                     static_groups=False,
                     tail_rank=args.tail_rank,
+                    head_absorb=head_absorb,
                 )
 
                 # 获取 clip ratio（如果使用 PercentileQuantizer）
@@ -387,17 +395,29 @@ def main():
     act_order = not args.no_act_order
 
     # 保存 metadata
-    metadata = {
-        "method": "tail_absorb",
-        "description": "Tail Absorb: GPTQ with main columns 4-bit FakeQuant "
+    head_absorb = getattr(args, 'head_absorb', False)
+    if head_absorb:
+        method_name = "head_absorb"
+        method_desc = ("Head Absorb (V8): GPTQ with main columns 4-bit FakeQuant "
+                       "and head columns INT8 FakeQuant. "
+                       "Head columns are the first tail_rank columns after actorder sorting "
+                       "(highest Hessian diagonal = most important activations). "
+                       "Both main and head columns propagate quantization error normally.")
+    else:
+        method_name = "tail_absorb"
+        method_desc = ("Tail Absorb (V7): GPTQ with main columns 4-bit FakeQuant "
                        "and tail columns INT8 FakeQuant. "
                        "Tail columns are the last tail_rank columns after actorder sorting "
                        "(lowest Hessian diagonal = least important activations). "
-                       "Both main and tail columns propagate quantization error normally.",
+                       "Both main and tail columns propagate quantization error normally.")
+    metadata = {
+        "method": method_name,
+        "description": method_desc,
         "model_dir": str(Path(args.model_dir).resolve()),
         "wbits": args.wbits,
         "percentile_k": args.percentile_k,
         "use_standard_quantizer": args.use_standard_quantizer,
+        "head_absorb": head_absorb,
         "tail_rank": args.tail_rank,
         "nsamples": args.nsamples,
         "seqlen": model.seqlen,

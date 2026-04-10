@@ -1,10 +1,12 @@
 """
-Tail Absorb 版 GPTQ 核心类 —— tail 列参与 INT8 量化 + FakeQuant
+Tail/Head Absorb 版 GPTQ 核心类 —— 指定列参与 INT8 量化 + FakeQuant
 
 核心思想：
 - GPTQTailAbsorb: 在 GPTQ 的 fasterquant 逐列迭代中，
-  actorder 排序后的最后 tail_rank 列使用 INT8 per-column 对称量化，
-  其余 main 列使用 4-bit Percentile 量化。
+  支持两种模式：
+  · Tail Absorb（V7 默认）：actorder 排序后的最后 tail_rank 列（最不重要）使用 INT8 量化
+  · Head Absorb（V8）：actorder 排序后的最前面 tail_rank 列（最重要）使用 INT8 量化
+  其余 main 列使用 4-bit 量化。
   两种列都正常计算 Err1 并向右传播，保持 GPTQ 补偿链完整。
 - PercentileQuantizer: 用第 k 百分位数确定量化 scale，替代默认的 min/max。
 - FakeQuant: 量化后立即反量化，Q 矩阵存储的是浮点值。
@@ -177,13 +179,21 @@ class GPTQTailAbsorb(GPTQ):
         actorder=False,
         static_groups=False,
         tail_rank=0,
+        head_absorb=False,
     ):
         """
-        Tail Absorb 版 fasterquant。
+        Tail/Head Absorb 版 fasterquant。
 
         参数:
-            tail_rank: tail 列数量。排序后的最后 tail_rank 列使用 INT8 量化。
-                       0 表示不使用 tail（退化为标准 GPTQ）。
+            tail_rank: INT8 列数量（绝对值）。
+                       head_absorb=False（默认，V7 Tail Absorb）：
+                         排序后的最后 tail_rank 列使用 INT8 量化。
+                       head_absorb=True（V8 Head Absorb）：
+                         排序后的最前面 tail_rank 列使用 INT8 量化。
+                       0 表示不使用 INT8 列（退化为标准 GPTQ）。
+            head_absorb: 是否启用 Head Absorb 模式。
+                         True = 最重要的列（排序后最前面）使用 INT8。
+                         False = 最不重要的列（排序后最后面）使用 INT8。
 
         返回:
             stats: dict，包含诊断统计信息
@@ -208,20 +218,32 @@ class GPTQTailAbsorb(GPTQ):
         H[dead, dead] = 1
         W[:, dead] = 0
 
-        # 提前计算 tail_start，供 static_groups 预计算使用
-        # tail_start 仅依赖 columns 和 tail_rank，不依赖排序结果
-        # tail_rank=0 时 tail_start=columns，所有列都是 main，退化为标准 GPTQ
+        # 提前计算 INT8 列范围，供 static_groups 预计算和逐列判断使用
+        # tail_rank=0 时所有列都是 main，退化为标准 GPTQ
         tail_rank = max(0, min(tail_rank, self.columns - 1))
-        tail_start = self.columns - tail_rank
+
+        if head_absorb:
+            # Head Absorb（V8）：排序后最前面 tail_rank 列为 INT8 列
+            # INT8 列范围：[0, head_end)，main 列范围：[head_end, columns)
+            head_end = tail_rank
+            # main 列的起始位置（用于 static_groups 和动态 group）
+            main_start = head_end
+            main_end = self.columns
+        else:
+            # Tail Absorb（V7 默认）：排序后最后 tail_rank 列为 INT8 列
+            # main 列范围：[0, tail_start)，INT8 列范围：[tail_start, columns)
+            tail_start = self.columns - tail_rank
+            main_start = 0
+            main_end = tail_start
 
         if static_groups:
-            # 【修复】仅为 main 列范围 [0, tail_start) 生成预计算 quantizer
-            # tail 列使用独立的 INT8 量化，不需要 group scale
+            # 仅为 main 列范围生成预计算 quantizer
+            # INT8 列使用独立的 INT8 量化，不需要 group scale
             groups = []
-            for i in range(0, tail_start, groupsize):
+            for i in range(main_start, main_end, groupsize):
                 quantizer = copy.deepcopy(self.quantizer)
-                # 【修复】最后一个 group 截断到 tail_start，排除 tail 列数据
-                group_end = min(i + groupsize, tail_start)
+                # 最后一个 group 截断到 main_end，排除 INT8 列数据
+                group_end = min(i + groupsize, main_end)
                 quantizer.find_params(W[:, i:group_end], weight=True)
                 groups.append(quantizer)
 
@@ -265,10 +287,13 @@ class GPTQTailAbsorb(GPTQ):
                 d = Hinv1[i, i]
 
                 col_idx = i1 + i
-                is_tail_col = (col_idx >= tail_start)
+                if head_absorb:
+                    is_int8_col = (col_idx < head_end)
+                else:
+                    is_int8_col = (col_idx >= tail_start)
 
-                if is_tail_col:
-                    # ---- Tail 列：INT8 per-column 对称量化（FakeQuant） ----
+                if is_int8_col:
+                    # ---- INT8 列：per-column 对称量化（FakeQuant） ----
                     # 忽略 groupsize 的 group scale，使用独立的 INT8 scale
                     q = _int8_fakequant_column(w)
                     Q1[:, i] = q
@@ -280,24 +305,22 @@ class GPTQTailAbsorb(GPTQ):
                     Err1[:, i] = err1
                     n_tail_int8 += 1
                 else:
-                    # ---- Main 列：4-bit Percentile 量化（FakeQuant） ----
+                    # ---- Main 列：4-bit 量化（FakeQuant） ----
                     if groupsize != -1:
                         if not static_groups:
-                            if (i1 + i) % groupsize == 0:
-                                # 【修复】group 取值范围截断到 tail_start，
-                                # 排除 tail 列数据对 main 列 group scale 的污染。
-                                # 当 tail_rank=0 时 tail_start=columns，
-                                # min(..., tail_start) 等价于原始值，行为不变。
-                                group_end = min(i1 + i + groupsize, tail_start)
-                                if group_end > i1 + i:
+                            if (col_idx - main_start) % groupsize == 0:
+                                # group 取值范围截断到 main_end，
+                                # 排除 INT8 列数据对 main 列 group scale 的污染。
+                                group_end = min(col_idx + groupsize, main_end)
+                                if group_end > col_idx:
                                     self.quantizer.find_params(
-                                        W[:, (i1 + i):group_end], weight=True
+                                        W[:, col_idx:group_end], weight=True
                                     )
                         else:
-                            idx = i1 + i
+                            idx = col_idx
                             if actorder:
                                 idx = perm[idx]
-                            self.quantizer = groups[idx // groupsize]
+                            self.quantizer = groups[(idx - main_start) // groupsize]
 
                     q = quantize(
                         w.unsqueeze(1),
@@ -323,8 +346,9 @@ class GPTQTailAbsorb(GPTQ):
         elapsed = time.time() - tick
         print('time %.2f' % elapsed)
         print('error', torch.sum(Losses).item())
-        print(f'main quantized (4-bit): {n_main_quantized}, '
-              f'tail quantized (int8): {n_tail_int8}')
+        mode_str = 'head_absorb' if head_absorb else 'tail_absorb'
+        print(f'mode: {mode_str}, main quantized (4-bit): {n_main_quantized}, '
+              f'int8 quantized: {n_tail_int8}')
 
         # 列顺序还原：使用 invperm 将排序后的 Q 还原回原始列顺序
         if actorder:
@@ -343,7 +367,9 @@ class GPTQTailAbsorb(GPTQ):
             "n_main_quantized": n_main_quantized,
             "n_tail_int8": n_tail_int8,
             "tail_rank": tail_rank,
-            "tail_start_sorted": tail_start,
+            "head_absorb": head_absorb,
+            "main_start": main_start,
+            "main_end": main_end,
             "gptq_loss": float(torch.sum(Losses).item()),
             "elapsed_seconds": elapsed,
         }

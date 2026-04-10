@@ -140,6 +140,16 @@ def parse_args():
             "Matching layers use the override format instead of the global --act-quant."
         ),
     )
+    parser.add_argument(
+        "--results-file",
+        type=str,
+        default="results.txt",
+        help=(
+            "Filename for the summary results text file (default: 'results.txt'). "
+            "The file will be created inside --output-dir. "
+            "Use a different name (e.g., 'results_stdts.txt') to isolate experiment results."
+        ),
+    )
     return parser.parse_args()
 
 # ---------------------------------------------------------------------------
@@ -634,15 +644,20 @@ def save_results_json(
     return result
 
 
-def append_results_txt(output_dir: str, result: dict):
+def append_results_txt(output_dir: str, result: dict, results_file: str = "results.txt"):
     """
-    Append evaluation result to results.txt summary file.
+    Append evaluation result to summary file.
 
     Each evaluation appends one record for easy cross-variant PPL comparison.
+
+    Args:
+        output_dir: Directory to write the results file.
+        result: Dict containing evaluation results.
+        results_file: Filename for the summary text file (default: 'results.txt').
     """
     out_path = Path(output_dir)
     out_path.mkdir(parents=True, exist_ok=True)
-    txt_file = out_path / "results.txt"
+    txt_file = out_path / results_file
 
     # Header (written only when file does not exist or is empty)
     header = (
@@ -751,8 +766,8 @@ def main():
         act_quant_overrides=overrides if overrides else None,
     )
 
-    # Append to results.txt (summary file)
-    append_results_txt(args.output_dir, result)
+    # Append to summary results file
+    append_results_txt(args.output_dir, result, results_file=args.results_file)
 
 
 if __name__ == "__main__":

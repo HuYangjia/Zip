@@ -25,3 +25,4 @@ qwen3_gptq_repro/output/*/
 !qwen3_gptq_repro/output/benchmark/**
 
 .codebuddy/
+**/.DS_Store

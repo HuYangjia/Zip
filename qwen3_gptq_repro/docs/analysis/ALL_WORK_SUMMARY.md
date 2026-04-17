@@ -2,13 +2,14 @@
 
 ## 1. 目标与范围
 
-本项目围绕 Qwen3-4B-Instruct-2507 模型的 4-bit 权重量化展开，从 V1 到 V7 共完成 7 个版本的实验迭代，涵盖以下主线：
+本项目围绕 Qwen3-4B-Instruct-2507 模型的 4-bit 权重量化展开，从 V1 到 V8 共完成 8 个版本的实验迭代，涵盖以下主线：
 
 1. 原始权重直接 GPTQ（基线）。
 2. Smooth(alpha=1) 后再 GPTQ（平滑链路）。
 3. Percentile + Tail 分层残差吸收原型（两种模式 A/B）。
 4. Tail Absorb（误差正常传播版）与 Tail Spill（误差不传播版）对比。
 5. SmoothQuant + Tail Absorb 组合 + act-order 消融实验。
+6. Head Absorb（对最重要列使用 INT8）vs Tail Absorb（对最不重要列使用 INT8）对比实验。
 
 已完成 WikiText-2 PPL 端到端评测（多种激活量化配置：Anone / A8 / A4g128 / A4g128+down:int8），评测脚本为 `benchmark/eval_ppl.py`。
 
@@ -119,7 +120,8 @@
 - ✅ V5：切换为标准 min/max Quantizer + Tail Spill，从原始权重出发（详见第 9 节）。
 - ✅ V6：在 V5 基础上加入 SmoothQuant 预处理，发现 rank-PPL 反转 bug（详见第 10 节）。
 - ✅ V7：使用 Tail Absorb 修复误差传播问题，完成 act-order 消融实验（详见第 11 节）。
-- ✅ 已完成 WikiText-2 PPL 端到端评测，全局汇总见第 12 节。
+- ✅ V8：Head Absorb 实验 — 对最重要列使用 INT8，与 V7 Tail Absorb 对比（详见第 12 节）。
+- ✅ 已完成 WikiText-2 PPL 端到端评测，全局汇总见第 13 节。
 
 ---
 
@@ -278,22 +280,24 @@ V7 使用 `GPTQTailAbsorb`（来自 `gptq_tail_absorb.py`）替代 `GPTQTailSpil
 
 ## 12. 全局 PPL 汇总表
 
-以下为 9 种权重配置 × 4 种激活量化的完整 PPL 数据（WikiText-2）：
+以下为 12 种权重配置 × 4 种激活量化的完整 PPL 数据（WikiText-2）：
 
 | 权重变体 | ActQ=none | ActQ=int8 | ActQ=int4-g128 | ActQ=int4-g128+down:int8 |
-|----------|-----------|-----------|----------------|--------------------------|
+|----------|-----------|-----------|----------------|---------------------------|
 | **FP16 baseline** | 10.0449 | 10.3204 | 14.1556 | 13.4046 |
 | **GPTQ 4bit (from raw)** | 10.3845 | 10.7033 | 15.3095 | 14.3323 |
 | **Smooth + GPTQ 4bit** | 10.8361 | 11.1372 | 14.1750 | 13.4645 |
-| **smooth_ta_r16 (act ON)** | **10.3428** | 10.6156 | 13.2699 | 12.6241 |
-| **smooth_ta_r64 (act ON)** | 10.4042 | 10.6748 | 13.3250 | 12.6773 |
-| **smooth_ta_r128 (act ON)** | 10.4184 | 10.6897 | 13.3127 | 12.6651 |
-| **smooth_ta_r16_noact (act OFF)** | 10.3846 | 10.6643 | **13.1251** | **12.5639** |
-| **smooth_ta_r64_noact (act OFF)** | 10.3909 | 10.6664 | 13.1782 | 12.6008 |
-| **smooth_ta_r128_noact (act OFF)** | 10.3949 | 10.6680 | 13.2016 | 12.6254 |
+| **smooth_ta_r16 (V7, act ON)** | **10.3428** | 10.6156 | 13.2699 | 12.6241 |
+| **smooth_ta_r64 (V7, act ON)** | 10.4042 | 10.6748 | 13.3250 | 12.6773 |
+| **smooth_ta_r128 (V7, act ON)** | 10.4184 | 10.6897 | 13.3127 | 12.6651 |
+| **smooth_ta_r16_noact (V7, act OFF)** | 10.3846 | 10.6643 | **13.1251** | **12.5639** |
+| **smooth_ta_r64_noact (V7, act OFF)** | 10.3909 | 10.6664 | 13.1782 | 12.6008 |
+| **smooth_ta_r128_noact (V7, act OFF)** | 10.3949 | 10.6680 | 13.2016 | 12.6254 |
+| **smooth_ha_r16 (V8)** | 10.4722 | 10.7695 | 13.3974 | 12.7906 |
+| **smooth_ha_r64 (V8)** | 10.3882 | 10.6568 | 13.2771 | 12.6874 |
+| **smooth_ha_r128 (V8)** | 10.5273 | 10.7974 | 13.4329 | 12.8077 |
 
-> 数据来源：`V7_summary_table.txt`、`output/benchmark/results_smooth_tail_absorb.txt`
-
+> 数据来源：`V7_summary_table.txt`、`output/benchmark/results_smooth_tail_absorb.txt`、`output/benchmark/results_smooth_head_absorb.txt`
 **各列最优值（不含 FP16）：**
 
 | 激活量化配置 | 最优变体 | PPL | act-order |
@@ -307,6 +311,86 @@ V7 使用 `GPTQTailAbsorb`（来自 `gptq_tail_absorb.py`）替代 `GPTQTailSpil
 
 ---
 
+## 12. V8 — Smooth + Head Absorb（对最重要列使用 INT8）
+
+> 📋 AI 指令文档：`docs/ai_instructions/W4A_BENCHMARK_V8_SMOOTH_HEAD_ABSORB.md`
+
+### 12.1 核心思路
+
+V8 使用与 V7 相同的 `GPTQTailAbsorb` 类，但通过新增的 `--head-absorb` 参数**反转 INT8 列的选择方向**：
+
+- **V7 Tail Absorb**：actorder 排序后**最后** tail_rank 列（最不重要）使用 INT8
+- **V8 Head Absorb**：actorder 排序后**最前面** tail_rank 列（最重要）使用 INT8
+
+**动机**：V7 实验发现 rank 参数对 PPL 影响极小（r16/r64/r128 差异仅 0.01-0.08），说明对不重要列使用 INT8 的收益有限。V8 测试反向策略：给最重要的列更高精度（INT8 > INT4），看是否能进一步降低 PPL。
+
+### 12.2 代码修改
+
+- `gptq_tail_absorb.py`：`fasterquant` 方法新增 `head_absorb=False` 参数
+  - `head_absorb=True` 时：INT8 列范围 `[0, tail_rank)`，main 列范围 `[tail_rank, columns)`
+  - `head_absorb=False` 时：保持 V7 行为不变
+- `qwen3_gptq_tail_absorb.py`：新增 `--head-absorb` CLI 参数
+
+### 12.3 实验变体
+
+3 种 tail_rank 配置，均从 smooth 后的权重出发，act-order ON：
+
+| 变体 | tail_rank | INT8 列位置 | 标签 |
+|------|-----------|------------|------|
+| smooth_ha_r16 | 16 | 最前面 16 列（最重要） | V8-1 |
+| smooth_ha_r64 | 64 | 最前面 64 列（最重要） | V8-2 |
+| smooth_ha_r128 | 128 | 最前面 128 列（最重要） | V8-3 |
+
+### 12.4 PPL 结果
+
+| 变体 | ActQ=none | ActQ=int8 | ActQ=int4-g128 | ActQ=int4-g128+down:int8 |
+|------|-----------|-----------|----------------|---------------------------|
+| smooth_ha_r16 | 10.4722 | 10.7695 | 13.3974 | 12.7906 |
+| smooth_ha_r64 | **10.3882** | **10.6568** | **13.2771** | 12.6874 |
+| smooth_ha_r128 | 10.5273 | 10.7974 | 13.4329 | 12.8077 |
+
+> 数据来源：`output/benchmark/results_smooth_head_absorb.txt`
+
+### 12.5 V7 vs V8 逐项对比（act-order ON）
+
+| rank | ActQ | V7 Tail | V8 Head | Δ(V8-V7) | 胜者 |
+|------|------|---------|---------|----------|------|
+| r16 | none | 10.3428 | 10.4722 | +0.1294 | V7 ✓ |
+| r16 | int8 | 10.6156 | 10.7695 | +0.1539 | V7 ✓ |
+| r16 | int4-g128 | 13.2699 | 13.3974 | +0.1275 | V7 ✓ |
+| r16 | int4+down | 12.6241 | 12.7906 | +0.1665 | V7 ✓ |
+| r64 | none | 10.4042 | 10.3882 | **-0.0160** | **V8** ⭐ |
+| r64 | int8 | 10.6748 | 10.6568 | **-0.0180** | **V8** ⭐ |
+| r64 | int4-g128 | 13.3250 | 13.2771 | **-0.0479** | **V8** ⭐ |
+| r64 | int4+down | 12.6773 | 12.6874 | +0.0101 | V7 ✓ |
+| r128 | none | 10.4184 | 10.5273 | +0.1089 | V7 ✓ |
+| r128 | int8 | 10.6897 | 10.7974 | +0.1077 | V7 ✓ |
+| r128 | int4-g128 | 13.3127 | 13.4329 | +0.1202 | V7 ✓ |
+| r128 | int4+down | 12.6651 | 12.8077 | +0.1426 | V7 ✓ |
+
+**统计**：V7 胜 9 组，V8 胜 3 组（均为 r=64 配置）。
+
+### 12.6 核心结论
+
+1. **V7 Tail Absorb 总体优于 V8 Head Absorb**：12 组对比中 V7 胜出 9 组，V8 仅在 r=64 的 3 组中略优。
+
+2. **V8 的 rank 敏感度呈 U 型曲线**：
+   - r16 = 10.4722 → r64 = 10.3882 → r128 = 10.5273（Anone）
+   - 存在最优 rank 平衡点（约 r=64），过少或过多的 INT8 列都不利
+   - 对比 V7 的单调递增趋势（r16=10.34 → r64=10.40 → r128=10.42），V8 的行为模式完全不同
+
+3. **r=64 是 Head Absorb 的甜蜜点**：
+   - V8 最佳配置 `smooth_ha_r64` PPL = 10.3882，距 V7 最佳 `smooth_ta_r16` 仅 +0.0454
+   - 在 A8 和 A4g128 配置下甚至略优于 V7 r64
+
+4. **物理解释**：
+   - Tail Absorb（V7）：不重要列用 INT8 → 几乎无损（因为这些列本身贡献小）
+   - Head Absorb（V8）：重要列用 INT8 → INT8 精度虽高于 INT4，但仍有量化误差，且这些列对模型输出影响大
+   - r=64 时 Head Absorb 效果好，可能是因为 64 列恰好覆盖了 outlier 最集中的区域，INT8 足以保护这些列
+   - r=128 时效果变差，说明超出 outlier 集中区域后，将正常列从 INT4 升级到 INT8 的收益不足以弥补 main 列减少带来的损失
+
+---
+
 ## 13. 更新后的状态与后续建议
 
 ### 13.1 当前状态
@@ -316,6 +400,7 @@ V7 使用 `GPTQTailAbsorb`（来自 `gptq_tail_absorb.py`）替代 `GPTQTailSpil
 - **V5**（Standard Tail Spill from raw）：✅ 已完成。切换为标准 Quantizer，建立对照实验基线。
 - **V6**（Smooth + Tail Spill）：✅ 已完成。发现并定位 rank-PPL 反转 bug。
 - **V7**（Smooth + Tail Absorb + act-order 消融）：✅ 已完成。修复误差传播问题，完成全面评测。
+- **V8**（Smooth + Head Absorb）：✅ 已完成。验证对最重要列使用 INT8 的效果，总体不如 V7 但 r=64 时接近。
 
 ### 13.2 后续可能方向
 
@@ -324,3 +409,5 @@ V7 使用 `GPTQTailAbsorb`（来自 `gptq_tail_absorb.py`）替代 `GPTQTailSpil
 3. **Tail Rank 自适应**：探索按层自适应选择 tail_rank（而非全局固定值）。
 4. **与其他量化方法对比**：与 AWQ、AQLM、QuIP# 等方法进行横向对比。
 5. **下游任务评测**：在 MMLU、GSM8K 等下游任务上评估量化模型的实际能力。
+6. **Head+Tail 混合策略**：基于 V8 r=64 的发现，探索同时对最重要和最不重要列使用 INT8 的双端混合策略。
+7. **自适应 INT8 列选择**：不按排序位置固定选择 INT8 列，而是根据每列的 Hessian 对角线值动态决定。

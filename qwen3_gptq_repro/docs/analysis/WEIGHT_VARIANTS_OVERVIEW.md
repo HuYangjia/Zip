@@ -5,7 +5,7 @@
 
 ---
 
-## 变体总数：22 种
+## 变体总数：25 种
 
 ### V1-V3 变体（#1-#10）
 
@@ -63,8 +63,18 @@
 | 22 | Smooth + Tail Absorb (r=128, act-order OFF) | INT4 (Smooth + 标准 GPTQ) + INT8 (tail, 误差传播) | `qwen3_gptq_tail_absorb.py` | 10.3949 |
 
 > 数据来源：`output/benchmark/results_smooth_tail_absorb.txt`
+
+### V8 变体（#23-#25）— Smooth + Head Absorb (act-order ON)
+
+| # | 变体名称 | 权重量化 | 实现脚本 | PPL (Anone) |
+|---|---------|---------|---------|-------------|
+| 23 | Smooth + Head Absorb (r=16, act-order ON) | INT4 (Smooth + 标准 GPTQ) + INT8 (head, 误差传播) | `qwen3_gptq_tail_absorb.py --head-absorb` | 10.4722 |
+| 24 | Smooth + Head Absorb (r=64, act-order ON) | INT4 (Smooth + 标准 GPTQ) + INT8 (head, 误差传播) | `qwen3_gptq_tail_absorb.py --head-absorb` | 10.3882 |
+| 25 | Smooth + Head Absorb (r=128, act-order ON) | INT4 (Smooth + 标准 GPTQ) + INT8 (head, 误差传播) | `qwen3_gptq_tail_absorb.py --head-absorb` | 10.5273 |
+
+> 数据来源：`output/benchmark/results_smooth_head_absorb.txt`
 >
-> **PPL 列说明**：变体 #1-#10 的 PPL 来自 W4A4 评测（激活 INT4）；变体 #11-#22 的 PPL 来自 Anone 评测（无激活量化）。完整的多配置 PPL 数据见 `docs/analysis/ALL_WORK_SUMMARY.md` 第 12 节。
+> **PPL 列说明**：变体 #1-#10 的 PPL 来自 W4A4 评测（激活 INT4）；变体 #11-#25 的 PPL 来自 Anone 评测（无激活量化）。完整的多配置 PPL 数据见 `docs/analysis/ALL_WORK_SUMMARY.md` 第 12 节。
 
 ---
 
@@ -393,6 +403,7 @@ graph TD
     SMOOTH --> STDTS_SMOOTH[变体14-16: Smooth + Std Tail Spill r=16/64/128]
     SMOOTH --> TA_ACT_ON[变体17-19: Smooth + Tail Absorb act-ON r=16/64/128]
     SMOOTH --> TA_ACT_OFF[变体20-22: Smooth + Tail Absorb act-OFF r=16/64/128]
+    SMOOTH --> HA_ACT_ON[变体23-25: Smooth + Head Absorb act-ON r=16/64/128]
 
     style FP16 fill:#e1f5fe
     style SMOOTH fill:#fff3e0
@@ -409,6 +420,7 @@ graph TD
     style STDTS_SMOOTH fill:#e0f2f1
     style TA_ACT_ON fill:#fff9c4
     style TA_ACT_OFF fill:#fff9c4
+    style HA_ACT_ON fill:#ffccbc
 ```
 
 ---
@@ -462,6 +474,18 @@ graph TD
 > **特点**：Tail 列做 INT8 fake-quant（量化后立即反量化），量化误差通过 Hessian 补偿正常传播。修复了第四类的 rank-PPL 反转问题。
 > 与第四类（Tail Spill）的核心区别：Tail Absorb 的 tail 列会产生量化误差并传播，而 Tail Spill 的 tail 列不产生误差。
 
+### 第六类：GPTQ Head Absorb（最重要列 INT8）
+
+| 变体 | 预处理 | Quantizer | Head 列处理 | act-order |
+|------|--------|-----------|------------|----------|
+| 变体 23 | SmoothQuant | 标准 min/max | INT8 fake-quant + 误差传播 | ON |
+| 变体 24 | SmoothQuant | 标准 min/max | INT8 fake-quant + 误差传播 | ON |
+| 变体 25 | SmoothQuant | 标准 min/max | INT8 fake-quant + 误差传播 | ON |
+
+> **特点**：与第五类（Tail Absorb）使用相同的 `GPTQTailAbsorb` 类，但通过 `--head-absorb` 参数反转 INT8 列的选择方向：
+> 对 actorder 排序后**最前面**（最重要）的 tail_rank 列使用 INT8 量化，其余列使用 4-bit 量化。
+> **实验结论**：Head Absorb 总体不如 Tail Absorb，但 r=64 时接近甚至略优，暗示存在最优 rank 平衡点。
+
 ---
 
 ## 关键组件说明
@@ -475,3 +499,46 @@ graph TD
 | `PercentileQuantizer` | `gptq_tail_spill.py` | 用 percentile 替代 min/max 确定量化范围，截断 outlier |
 | `quantize_tail_int8` | `gptq_tail_spill.py` | 对 tail 列做 per-row INT8 对称量化 |
 | `eval_ppl.py` | `benchmark/eval_ppl.py` | WikiText-2 PPL 评测，支持 W4A4 激活量化模拟 |
+
+---
+
+### 23. Smooth + Head Absorb (r=16, act-order ON)
+
+- **脚本**：[qwen3_smooth.py](/Users/yangjiahu/Desktop/workspace/HKUST/Zip/qwen3_gptq_repro/qwen3_smooth.py) → [qwen3_gptq_tail_absorb.py](/Users/yangjiahu/Desktop/workspace/HKUST/Zip/qwen3_gptq_repro/qwen3_gptq_tail_absorb.py) + [gptq_tail_absorb.py](/Users/yangjiahu/Desktop/workspace/HKUST/Zip/qwen3_gptq_repro/gptq_tail_absorb.py)
+- **架构**：两阶段流水线
+  1. **SmoothQuant 预处理**（`qwen3_smooth.py`）：alpha=1 平滑激活 outlier
+  2. **Head Absorb 量化**（`qwen3_gptq_tail_absorb.py --use-standard-quantizer --init-state-dict --head-absorb`）：
+     - 加载 smooth 后的 state_dict
+     - 使用 `GPTQTailAbsorb` 核心类（`head_absorb=True`）
+     - Head 列（排序后最前面 16 列，最重要）：**INT8 fake-quant + 误差正常传播**
+     - Main 列（其余列）：标准 GPTQ 4-bit + Hessian 误差补偿
+     - 启用 act-order
+- **功能**：V8 实验 — 验证对最重要列使用 INT8 是否优于对最不重要列使用 INT8
+- **核心参数**：`--tail-rank 16`，`--head-absorb`，`--use-standard-quantizer`，`--init-state-dict`
+- **输出产物**：`output/exp_smooth_head_absorb/from_smooth_r16/qwen3-4b-instruct-2507-gptq-4bit.pt`
+- **PPL (Anone)**：10.4722 | **PPL (A8)**：10.7695 | **PPL (A4g128)**：13.3974 | **PPL (A4g128+down:int8)**：12.7906
+- **实验结果文件**：`output/benchmark/results_smooth_head_absorb.txt`
+
+---
+
+### 24. Smooth + Head Absorb (r=64, act-order ON)
+
+- **脚本**：同变体 23
+- **架构**：与变体 23 完全相同，唯一区别是 **tail_rank=64**
+- **功能**：V8 rank 消融实验 — 对比 r=16 vs r=64
+- **核心参数**：`--tail-rank 64`，`--head-absorb`，`--use-standard-quantizer`，`--init-state-dict`
+- **输出产物**：`output/exp_smooth_head_absorb/from_smooth_r64/qwen3-4b-instruct-2507-gptq-4bit.pt`
+- **PPL (Anone)**：10.3882 ⭐ | **PPL (A8)**：10.6568 | **PPL (A4g128)**：13.2771 | **PPL (A4g128+down:int8)**：12.6874
+- **⭐ V8 最佳配置**：r=64 在 Anone/A8/A4g128 三项上均为 V8 最优，且在 A8/A4g128 上略优于 V7 对应配置
+
+---
+
+### 25. Smooth + Head Absorb (r=128, act-order ON)
+
+- **脚本**：同变体 23
+- **架构**：与变体 23 完全相同，唯一区别是 **tail_rank=128**
+- **功能**：V8 rank 消融实验 — 对比 r=16 vs r=128
+- **核心参数**：`--tail-rank 128`，`--head-absorb`，`--use-standard-quantizer`，`--init-state-dict`
+- **输出产物**：`output/exp_smooth_head_absorb/from_smooth_r128/qwen3-4b-instruct-2507-gptq-4bit.pt`
+- **PPL (Anone)**：10.5273 | **PPL (A8)**：10.7974 | **PPL (A4g128)**：13.4329 | **PPL (A4g128+down:int8)**：12.8077
+- **⚠️ rank 过大导致 PPL 恶化**：r=128 是 V8 中最差的配置，说明将过多重要列降为 INT8 反而有害

@@ -19,6 +19,7 @@ import time
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 import sys
 from pathlib import Path
@@ -37,10 +38,106 @@ from gptq_tail_absorb import PercentileQuantizer, _int8_fakequant_column  # noqa
 
 logger = logging.getLogger(__name__)
 
+
+# ---------------------------------------------------------------------------
+# Phase 1 辅助函数：向量化 per-block INT4 fake-quant
+# ---------------------------------------------------------------------------
+
+def _vectorized_int4_fakequant_blocks(
+    blocks: torch.Tensor,
+    maxq: int,
+    sym: bool,
+) -> tuple:
+    """
+    对 4D 块视图一次性执行向量化的 INT4 fake-quant。
+
+    参数:
+        blocks: (nrow, ncol, brow, bcol) 4D 块视图
+        maxq: 量化最大值（如 4-bit 为 15）
+        sym: 是否对称量化
+
+    返回:
+        blocks_q: (nrow, ncol, brow, bcol) 量化后的块
+        errors: (nrow, ncol) 每个块的 Frobenius 范数误差
+    """
+    # 计算每个块的 min/max，形状 (nrow, ncol)
+    # 先 reshape 为 (nrow, ncol, brow*bcol) 以便沿最后一维取 min/max
+    nrow, ncol, brow, bcol = blocks.shape
+    blocks_flat = blocks.reshape(nrow, ncol, -1)  # (nrow, ncol, brow*bcol)
+
+    tmp_zero = torch.zeros(nrow, ncol, device=blocks.device, dtype=blocks.dtype)
+    block_min = torch.minimum(blocks_flat.amin(dim=-1), tmp_zero)  # (nrow, ncol)
+    block_max = torch.maximum(blocks_flat.amax(dim=-1), tmp_zero)  # (nrow, ncol)
+
+    if sym:
+        block_max = torch.maximum(torch.abs(block_min), block_max)
+        tmp_neg = block_min < 0
+        block_min[tmp_neg] = -block_max[tmp_neg]
+
+    # 处理全零块
+    all_zero = (block_min == 0) & (block_max == 0)
+    block_min[all_zero] = -1
+    block_max[all_zero] = +1
+
+    # 计算 per-block scale 和 zero，形状 (nrow, ncol)
+    scale = (block_max - block_min) / maxq
+    if sym:
+        zero = torch.full_like(scale, (maxq + 1) / 2)
+    else:
+        zero = torch.round(-block_min / scale)
+
+    # 扩展 scale/zero 到 (nrow, ncol, 1, 1) 以便广播
+    scale_4d = scale.unsqueeze(-1).unsqueeze(-1)  # (nrow, ncol, 1, 1)
+    zero_4d = zero.unsqueeze(-1).unsqueeze(-1)    # (nrow, ncol, 1, 1)
+
+    # 向量化 quantize: q = clamp(round(x / scale) + zero, 0, maxq)
+    # dequant: x_q = scale * (q - zero)
+    q = torch.clamp(torch.round(blocks / scale_4d) + zero_4d, 0, maxq)
+    blocks_q = scale_4d * (q - zero_4d)
+
+    # 计算每个块的 Frobenius 范数误差
+    diff = blocks - blocks_q
+    errors = torch.norm(diff.reshape(nrow, ncol, -1), p=2, dim=-1)  # (nrow, ncol)
+
+    return blocks_q, errors
+
+
+def _pad_and_reshape_to_blocks(
+    W: torch.Tensor,
+    brow: int,
+    bcol: int,
+    nrow: int,
+    ncol: int,
+) -> torch.Tensor:
+    """
+    将权重矩阵 W 进行 zero-padding 并 reshape 为 4D 块视图。
+
+    参数:
+        W: (d_out, d_in) 权重矩阵
+        brow, bcol: 块尺寸
+        nrow, ncol: 网格尺寸
+
+    返回:
+        blocks: (nrow, ncol, brow, bcol) 4D 块视图
+    """
+    d_out, d_in = W.shape
+    pad_rows = nrow * brow - d_out
+    pad_cols = ncol * bcol - d_in
+
+    if pad_rows > 0 or pad_cols > 0:
+        # F.pad 参数顺序: (left, right, top, bottom)
+        W_padded = F.pad(W, (0, pad_cols, 0, pad_rows), value=0.0)
+    else:
+        W_padded = W
+
+    # reshape: (nrow*brow, ncol*bcol) -> (nrow, brow, ncol, bcol) -> (nrow, ncol, brow, bcol)
+    blocks = W_padded.reshape(nrow, brow, ncol, bcol).permute(0, 2, 1, 3).contiguous()
+    return blocks
+
+
 # ---------------------------------------------------------------------------
 # Phase 1：子矩阵敏感度评分
 # ---------------------------------------------------------------------------
-
 
 def compute_block_sensitivity(
     W: torch.Tensor,
@@ -78,62 +175,44 @@ def compute_block_sensitivity(
     n_high = max(1, round(n_total * budget_ratio))
     n_high = min(n_high, n_total)  # 不超过总块数
 
-    scores = torch.zeros(nrow, ncol, device=dev)
-
     if metric == "weight_norm":
-        # 不需要 fake-quant，直接计算 Frobenius 范数
-        for br in range(nrow):
-            r0 = br * brow
-            r1 = min(r0 + brow, d_out)
-            for bc in range(ncol):
-                c0 = bc * bcol
-                c1 = min(c0 + bcol, d_in)
-                block = W[r0:r1, c0:c1]
-                scores[br, bc] = torch.norm(block, p="fro").item()
+        # 向量化：pad + reshape + per-block Frobenius 范数
+        blocks = _pad_and_reshape_to_blocks(W, brow, bcol, nrow, ncol)
+        # blocks: (nrow, ncol, brow, bcol)
+        scores = torch.norm(blocks.reshape(nrow, ncol, -1), p=2, dim=-1)  # (nrow, ncol)
 
     elif metric == "quant_error":
         if quantizer is None:
             raise ValueError("quantizer 参数在 quant_error 模式下不能为 None")
-        # 对每个块做 INT4 fake-quant，计算量化误差
-        for br in range(nrow):
-            r0 = br * brow
-            r1 = min(r0 + brow, d_out)
-            for bc in range(ncol):
-                c0 = bc * bcol
-                c1 = min(c0 + bcol, d_in)
-                block = W[r0:r1, c0:c1]
-
-                # 临时 quantizer：为该块独立计算 INT4 scale
-                tmp_q = copy.deepcopy(quantizer)
-                tmp_q.find_params(block, weight=True)
-                block_q = quantize(
-                    block, tmp_q.scale, tmp_q.zero, tmp_q.maxq
-                )
-                scores[br, bc] = torch.norm(block - block_q, p="fro").item()
+        # 向量化：pad + reshape + per-block INT4 fake-quant + error norm
+        blocks = _pad_and_reshape_to_blocks(W, brow, bcol, nrow, ncol)
+        maxq = int(quantizer.maxq.item())
+        sym = quantizer.sym
+        _, scores = _vectorized_int4_fakequant_blocks(blocks, maxq, sym)
 
     elif metric == "hessian_weighted":
         if quantizer is None:
             raise ValueError("quantizer 参数在 hessian_weighted 模式下不能为 None")
         if H_diag is None:
             raise ValueError("H_diag 参数在 hessian_weighted 模式下不能为 None")
-        # Hessian 对角线加权的量化误差
-        for br in range(nrow):
-            r0 = br * brow
-            r1 = min(r0 + brow, d_out)
-            for bc in range(ncol):
-                c0 = bc * bcol
-                c1 = min(c0 + bcol, d_in)
-                block = W[r0:r1, c0:c1]
-                h_slice = H_diag[c0:c1]  # (bcol_actual,)
+        # 向量化：pad + reshape + per-block INT4 fake-quant + Hessian 加权误差
+        blocks = _pad_and_reshape_to_blocks(W, brow, bcol, nrow, ncol)
+        maxq = int(quantizer.maxq.item())
+        sym = quantizer.sym
+        blocks_q, _ = _vectorized_int4_fakequant_blocks(blocks, maxq, sym)
 
-                tmp_q = copy.deepcopy(quantizer)
-                tmp_q.find_params(block, weight=True)
-                block_q = quantize(
-                    block, tmp_q.scale, tmp_q.zero, tmp_q.maxq
-                )
-                # S = sum((W_block - Q_block)^2 * H_diag_slice)
-                err_sq = (block - block_q) ** 2  # (rows, cols)
-                scores[br, bc] = torch.sum(err_sq * h_slice.unsqueeze(0)).item()
+        # 将 H_diag pad 到 ncol*bcol 并 reshape 为 (1, ncol, 1, bcol)
+        pad_cols = ncol * bcol - d_in
+        if pad_cols > 0:
+            H_diag_padded = F.pad(H_diag, (0, pad_cols), value=0.0)
+        else:
+            H_diag_padded = H_diag
+        h_diag_view = H_diag_padded.reshape(ncol, bcol).unsqueeze(0).unsqueeze(2)
+        # h_diag_view: (1, ncol, 1, bcol)
+
+        # S = sum((blocks - blocks_q)^2 * h_diag_view) per block
+        err_sq = (blocks - blocks_q) ** 2  # (nrow, ncol, brow, bcol)
+        scores = (err_sq * h_diag_view).sum(dim=(-2, -1))  # (nrow, ncol)
     else:
         raise ValueError(
             f"未知的 sensitivity_metric: {metric}，"
@@ -304,6 +383,14 @@ class GPTQSubmatrixMixed(GPTQ):
         n_int4_segments = 0
         n_int8_segments = 0
 
+        # 预计算列类型查找表：避免逐列循环中重复判断
+        # col_is_all_int4[bc] = True 表示该 block_col 的所有行块均为 INT4
+        # col_is_all_int8[bc] = True 表示该 block_col 的所有行块均为 INT8
+        col_has_any_int8 = high_precision_mask.any(dim=0)   # (ncol,)
+        col_is_all_int8 = high_precision_mask.all(dim=0)    # (ncol,)
+        col_is_all_int4 = ~col_has_any_int8                 # (ncol,)
+        # col_is_mixed = col_has_any_int8 & ~col_is_all_int8
+
         for i1 in range(0, self.columns, blocksize):
             i2 = min(i1 + blocksize, self.columns)
             count = i2 - i1
@@ -336,26 +423,42 @@ class GPTQSubmatrixMixed(GPTQ):
                         if grp_idx < len(groups) and groups[grp_idx] is not None:
                             self.quantizer = groups[grp_idx]
 
-                # ---- 逐行段混合精度量化 ----
-                q = torch.zeros_like(w)
+                # ---- 逐行段混合精度量化（快速路径优化） ----
+                if block_col < ncol and col_is_all_int4[block_col]:
+                    # 快速路径：该列所有行块均为 INT4，直接一次量化
+                    q = quantize(
+                        w.unsqueeze(1),
+                        self.quantizer.scale,
+                        self.quantizer.zero,
+                        self.quantizer.maxq,
+                    ).flatten()
+                    n_int4_segments += nrow
 
-                for br in range(nrow):
-                    r0 = br * brow
-                    r1 = min(r0 + brow, d_out)
+                elif block_col < ncol and col_is_all_int8[block_col]:
+                    # 快速路径：该列所有行块均为 INT8，直接一次量化
+                    q = _int8_fakequant_column(w)
+                    n_int8_segments += nrow
 
-                    if block_col < ncol and high_precision_mask[br, block_col]:
-                        # INT8 行段：per-column 对称量化（FakeQuant）
-                        q[r0:r1] = _int8_fakequant_column(w[r0:r1])
-                        n_int8_segments += 1
-                    else:
-                        # INT4 行段：使用当前 group scale 量化
-                        q[r0:r1] = quantize(
-                            w[r0:r1].unsqueeze(1),
-                            self.quantizer.scale[r0:r1],
-                            self.quantizer.zero[r0:r1],
-                            self.quantizer.maxq,
-                        ).flatten()
-                        n_int4_segments += 1
+                else:
+                    # 混合列：先做整列 INT4，再对 INT8 行段覆盖
+                    q = quantize(
+                        w.unsqueeze(1),
+                        self.quantizer.scale,
+                        self.quantizer.zero,
+                        self.quantizer.maxq,
+                    ).flatten()
+                    n_int4_count = 0
+                    n_int8_count = 0
+                    for br in range(nrow):
+                        if block_col < ncol and high_precision_mask[br, block_col]:
+                            r0 = br * brow
+                            r1 = min(r0 + brow, d_out)
+                            q[r0:r1] = _int8_fakequant_column(w[r0:r1])
+                            n_int8_count += 1
+                        else:
+                            n_int4_count += 1
+                    n_int4_segments += n_int4_count
+                    n_int8_segments += n_int8_count
 
                 Q1[:, i] = q
                 Losses1[:, i] = (w - q) ** 2 / d ** 2

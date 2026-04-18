@@ -1,0 +1,15 @@
+{
+  "label": "v9_b128x128_r5_wn_Anone",
+  "ppl": 10.4412,
+  "total_tokens": 298862,
+  "elapsed_seconds": 36.9,
+  "model_dir": "/home/zhou/Documents/yangjia/zip/models/Qwen3-4B-Instruct-2507",
+  "quant_weights": "/home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/exp_v9_all/v5_b128x128_r5_wn/qwen3-4b-instruct-2507-gptq-4bit.pt",
+  "seqlen": 2048,
+  "seed": 0,
+  "dtype": "float16",
+  "act_quant": "none",
+  "act_quant_overrides": null,
+  "data_source": "local: /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/data/wikitext2",
+  "timestamp": "2026-04-17T17:59:22.011411"
+}

@@ -23,6 +23,8 @@ qwen3_gptq_repro/data
 qwen3_gptq_repro/output/*/
 !qwen3_gptq_repro/output/benchmark/
 !qwen3_gptq_repro/output/benchmark/**
+!qwen3_gptq_repro/output/benchmark_v9/
+!qwen3_gptq_repro/output/benchmark_v9/** */
 
 .codebuddy/
 **/.DS_Store

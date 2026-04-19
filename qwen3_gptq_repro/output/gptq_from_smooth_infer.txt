@@ -1,7 +1,0 @@
-cuda available: True
-quantized weights: /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/gptq_from_smooth/qwen3-4b-instruct-2507-gptq-4bit.pt
-
---- OUTPUT ---
-大模型量化的核心思想是通过将模型中高精度的浮点数权重和激活值转换为低精度的整数或定点数，以显著降低模型的存储和计算开销。  
-其核心目标是在尽可能保留模型性能的前提下，压缩模型的参数体积和计算复杂度，从而实现模型在边缘设备上的高效部署。  
-量化本质上是一种“以精度为代价换取效率”的权衡，通过精心设计的量化策略和后训练校正，实现精度与效率的平衡。

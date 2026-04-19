@@ -1,7 +1,0 @@
-cuda available: True
-quantized weights: /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/gptq_from_raw/qwen3-4b-instruct-2507-gptq-4bit.pt
-
---- OUTPUT ---
-大模型量化的核心思想是通过降低模型中权重的位宽（如从32位浮点数变为8位整数或更低），在不显著损失模型性能的前提下，大幅减少模型的参数量和计算开销。  
-这不仅降低了模型的存储需求和计算成本，还提升了推理速度和部署效率，尤其适用于资源受限的设备。  
-量化过程通常结合校准和后训练技术，以保持模型输出的准确性，避免因数值范围压缩导致的性能下降。

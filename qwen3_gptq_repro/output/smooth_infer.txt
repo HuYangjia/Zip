@@ -1,7 +1,0 @@
-cuda available: True
-quantized weights: /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/smooth/smoothed_model_state_dict.pt
-
---- OUTPUT ---
-大模型量化的核心思想是通过减少模型中权重和激活值的位数（如从32位浮点数压缩到8位整数），在保持模型性能的前提下显著降低计算和存储开销。  
-它利用数值的近似性，将高精度浮点数映射为低精度整数，从而提升推理速度和部署效率，尤其适用于资源受限的边缘设备。  
-量化过程通常包括量化感知训练（QAT）或后训练量化（PTQ），以保证量化后的模型在实际应用中仍具备良好的准确率。

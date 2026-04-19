@@ -2,29 +2,30 @@
 __pycache__/
 *.py[cod]
 
-# Model/checkpoint and quantization artifacts
+# Model weights and quantization artifacts
 models/
-**/output/
 **/*.pt
 **/*.bin
 **/*.safetensors
 **/*.ckpt
 **/*.onnx
-qwen3_gptq_repro/data
+
+# Output directory (ignore generated weights, keep benchmark results)
+qwen3_gptq_repro/output/*/
+!qwen3_gptq_repro/output/benchmark/
+!qwen3_gptq_repro/output/benchmark/**
+!qwen3_gptq_repro/output/benchmark_v9/
+!qwen3_gptq_repro/output/benchmark_v9/**
+
+# Calibration data
+qwen3_gptq_repro/data/
 
 # Logs and temporary files
 *.log
 *.tmp
 
-!gptq/
-!gptq/**
+# OS files
+.DS_Store
 
-!qwen3_gptq_repro/output/
-qwen3_gptq_repro/output/*/
-!qwen3_gptq_repro/output/benchmark/
-!qwen3_gptq_repro/output/benchmark/**
-!qwen3_gptq_repro/output/benchmark_v9/
-!qwen3_gptq_repro/output/benchmark_v9/** */
-
+# IDE / tool artifacts
 .codebuddy/
-**/.DS_Store

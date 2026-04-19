@@ -12,8 +12,8 @@
 ## Quick Start
 
 ```bash
-conda create -n gptq python=3.10 -y && conda activate gptq
-pip install torch>=2.1 transformers>=4.40 datasets sentencepiece
+conda create -n zip python=3.10 -y && conda activate zip
+pip install -r requirements.txt
 ```
 
 👉 **[Experiment Guide](qwen3_gptq_repro/docs/EXPERIMENT_GUIDE.md)** — 5 分钟上手运行所有实验
@@ -43,9 +43,8 @@ Zip/
 ## Requirements
 
 - Python 3.10+
-- PyTorch >= 2.1 (CUDA)
-- transformers >= 4.40
-- datasets, sentencepiece
+- Install with `pip install -r requirements.txt`
+- `requirements.txt` is rebuilt from the actively used `zip` environment
 - GPU: >= 16GB VRAM (Qwen3-4B)
 
 ## Key Results (Qwen3-4B, WikiText-2 PPL)

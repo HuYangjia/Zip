@@ -43,6 +43,34 @@ logger = logging.getLogger(__name__)
 # Phase 1 辅助函数：向量化 per-block INT4 fake-quant
 # ---------------------------------------------------------------------------
 
+def _int8_fakequant_group(
+    W_slice: torch.Tensor,
+    eps: float = 1e-8,
+) -> tuple:
+    """
+    对 (d_out, bcol) 的切片执行 per-row INT8 对称 fake-quant。
+
+    【统一粒度】沿 dim=1（bcol 维）计算每行的 max(|w|)，得到 (d_out, 1) 的
+    scale，保证 scale 粒度为 (1, bcol) —— 与 Phase 1 INT4 的粒度一致。
+
+    参数:
+        W_slice: (d_out, bcol) 权重切片
+        eps: 防止除零的极小值（clamp 下限）
+
+    返回:
+        dequant: (d_out, bcol) 反量化后的浮点张量
+        scale_per_row: (d_out,) 每行的 scale（便于缓存与统计）
+    """
+    # 沿 dim=1 计算每行的 max(|w|)，形状 (d_out, 1)
+    max_abs = W_slice.abs().amax(dim=1, keepdim=True)
+    scale = torch.clamp(max_abs / 127.0, min=eps)  # (d_out, 1)
+
+    q = torch.clamp(torch.round(W_slice / scale), -128, 127)
+    dequant = q * scale
+
+    return dequant, scale.squeeze(1)
+
+
 def _vectorized_int4_fakequant_blocks(
     blocks: torch.Tensor,
     maxq: int,
@@ -51,6 +79,9 @@ def _vectorized_int4_fakequant_blocks(
     """
     对 4D 块视图一次性执行向量化的 INT4 fake-quant。
 
+    【统一粒度改造】scale/zero 粒度为 (1, bcol)：沿 bcol 维（最后一维）计算
+    min/max，同一 (brow, bcol) 块内沿 brow 方向每行独立一个 scale/zero。
+
     参数:
         blocks: (nrow, ncol, brow, bcol) 4D 块视图
         maxq: 量化最大值（如 4-bit 为 15）
@@ -58,44 +89,45 @@ def _vectorized_int4_fakequant_blocks(
 
     返回:
         blocks_q: (nrow, ncol, brow, bcol) 量化后的块
-        errors: (nrow, ncol) 每个块的 Frobenius 范数误差
+        errors: (nrow, ncol) 每个块的 Frobenius 范数误差（按块聚合，
+                仍以块为打分单元以保持 top-k 选择逻辑不变）
     """
-    # 计算每个块的 min/max，形状 (nrow, ncol)
-    # 先 reshape 为 (nrow, ncol, brow*bcol) 以便沿最后一维取 min/max
     nrow, ncol, brow, bcol = blocks.shape
-    blocks_flat = blocks.reshape(nrow, ncol, -1)  # (nrow, ncol, brow*bcol)
 
-    tmp_zero = torch.zeros(nrow, ncol, device=blocks.device, dtype=blocks.dtype)
-    block_min = torch.minimum(blocks_flat.amin(dim=-1), tmp_zero)  # (nrow, ncol)
-    block_max = torch.maximum(blocks_flat.amax(dim=-1), tmp_zero)  # (nrow, ncol)
+    # 沿最后一维 (bcol) 计算 per-row 的 min/max，形状 (nrow, ncol, brow)
+    tmp_zero = torch.zeros(
+        nrow, ncol, brow, device=blocks.device, dtype=blocks.dtype
+    )
+    row_min = torch.minimum(blocks.amin(dim=-1), tmp_zero)  # (nrow, ncol, brow)
+    row_max = torch.maximum(blocks.amax(dim=-1), tmp_zero)  # (nrow, ncol, brow)
 
     if sym:
-        block_max = torch.maximum(torch.abs(block_min), block_max)
-        tmp_neg = block_min < 0
-        block_min[tmp_neg] = -block_max[tmp_neg]
+        row_max = torch.maximum(torch.abs(row_min), row_max)
+        tmp_neg = row_min < 0
+        row_min[tmp_neg] = -row_max[tmp_neg]
 
-    # 处理全零块
-    all_zero = (block_min == 0) & (block_max == 0)
-    block_min[all_zero] = -1
-    block_max[all_zero] = +1
+    # 处理"单行全零"边界：把 min/max 置为 ±1 以避免除零
+    all_zero = (row_min == 0) & (row_max == 0)
+    row_min[all_zero] = -1
+    row_max[all_zero] = +1
 
-    # 计算 per-block scale 和 zero，形状 (nrow, ncol)
-    scale = (block_max - block_min) / maxq
+    # 计算 per-row(每组) scale 和 zero，形状 (nrow, ncol, brow)
+    scale = (row_max - row_min) / maxq
     if sym:
         zero = torch.full_like(scale, (maxq + 1) / 2)
     else:
-        zero = torch.round(-block_min / scale)
+        zero = torch.round(-row_min / scale)
 
-    # 扩展 scale/zero 到 (nrow, ncol, 1, 1) 以便广播
-    scale_4d = scale.unsqueeze(-1).unsqueeze(-1)  # (nrow, ncol, 1, 1)
-    zero_4d = zero.unsqueeze(-1).unsqueeze(-1)    # (nrow, ncol, 1, 1)
+    # 扩展 scale/zero 到 (nrow, ncol, brow, 1) 以便沿 bcol 维广播
+    scale_4d = scale.unsqueeze(-1)  # (nrow, ncol, brow, 1)
+    zero_4d = zero.unsqueeze(-1)    # (nrow, ncol, brow, 1)
 
     # 向量化 quantize: q = clamp(round(x / scale) + zero, 0, maxq)
     # dequant: x_q = scale * (q - zero)
     q = torch.clamp(torch.round(blocks / scale_4d) + zero_4d, 0, maxq)
     blocks_q = scale_4d * (q - zero_4d)
 
-    # 计算每个块的 Frobenius 范数误差
+    # 计算每个块的 Frobenius 范数误差（块内 brow 行误差会被聚合到单块分数）
     diff = blocks - blocks_q
     errors = torch.norm(diff.reshape(nrow, ncol, -1), p=2, dim=-1)  # (nrow, ncol)
 
@@ -235,11 +267,13 @@ def compute_block_sensitivity(
         f"INT8 块数: {n_high}, metric: {metric}, "
         f"top-5 scores: [{', '.join(top5_list)}]"
     )
+    logger.info(f"[Phase1] granularity=(1, {bcol})")
     print(
         f"  [Phase1] grid={nrow}x{ncol} ({n_total} blocks), "
         f"INT8={n_high}, metric={metric}, "
         f"top5=[{', '.join(top5_list)}]"
     )
+    print(f"  [Phase1] granularity=(1, {bcol})")
 
     return scores, high_precision_mask
 
@@ -288,6 +322,14 @@ class GPTQSubmatrixMixed(GPTQ):
 
         brow, bcol = block_shape
 
+        # ---- 统一粒度模式参数约束 ----
+        # 所有量化路径的 scale 粒度均为 (1, bcol)，要求 groupsize == bcol。
+        if groupsize == -1 or groupsize != bcol:
+            raise ValueError(
+                f"统一粒度模式下要求 groupsize == block_cols，"
+                f"当前 groupsize={groupsize}, bcol={bcol}"
+            )
+
         W = self.layer.weight.data.clone()
         if isinstance(self.layer, nn.Conv2d):
             W = W.flatten(1)
@@ -298,6 +340,13 @@ class GPTQSubmatrixMixed(GPTQ):
         d_out, d_in = W.shape
         nrow = math.ceil(d_out / brow)
         ncol = math.ceil(d_in / bcol)
+
+        # 存在边界块时提示一次（scale 会基于真实元素，不被 zero-padding 影响）
+        if d_in % bcol != 0:
+            logger.warning(
+                f"存在边界块（d_in={d_in} % bcol={bcol} != 0），"
+                f"scale 将基于真实元素计算"
+            )
 
         tick = time.time()
 
@@ -391,6 +440,10 @@ class GPTQSubmatrixMixed(GPTQ):
         col_is_all_int4 = ~col_has_any_int8                 # (ncol,)
         # col_is_mixed = col_has_any_int8 & ~col_is_all_int8
 
+        # ---- INT8 scale 缓存：每个 block_col 一次预计算，整组 bcol 列复用 ----
+        # key: block_col 索引; value: (d_out,) 的 per-row scale 张量
+        int8_scale_cache: dict = {}
+
         for i1 in range(0, self.columns, blocksize):
             i2 = min(i1 + blocksize, self.columns)
             count = i2 - i1
@@ -407,7 +460,9 @@ class GPTQSubmatrixMixed(GPTQ):
                 col_idx = i1 + i
                 block_col = col_idx // bcol
 
-                # ---- group scale 更新（与 V7 main 列逻辑相同） ----
+                # ---- group scale 更新（INT4 路径：粒度 (1, bcol)） ----
+                # 本模式下保证 groupsize == bcol，故每 bcol 列做一次 find_params，
+                # 等价于 per-row-per-group 的 (1, bcol) 粒度 scale/zero。
                 if groupsize != -1:
                     if not static_groups:
                         if col_idx % groupsize == 0:
@@ -423,6 +478,20 @@ class GPTQSubmatrixMixed(GPTQ):
                         if grp_idx < len(groups) and groups[grp_idx] is not None:
                             self.quantizer = groups[grp_idx]
 
+                # ---- INT8 scale 预计算（每个 block_col 一次，组内复用） ----
+                # 进入新的 block_col 的第一列时，如果该列存在任何 INT8 行段，
+                # 则对 W[:, col_idx : col_idx+bcol] 预计算 (d_out,) scale 并缓存。
+                if (
+                    col_idx % bcol == 0
+                    and block_col < ncol
+                    and col_has_any_int8[block_col]
+                ):
+                    group_end_int8 = min(col_idx + bcol, self.columns)
+                    # 切片可能不足 bcol 列（边界块），scale 将只基于真实元素
+                    W_group_slice = W[:, col_idx:group_end_int8]
+                    _, scale_row_cached = _int8_fakequant_group(W_group_slice)
+                    int8_scale_cache[block_col] = scale_row_cached
+
                 # ---- 逐行段混合精度量化（快速路径优化） ----
                 if block_col < ncol and col_is_all_int4[block_col]:
                     # 快速路径：该列所有行块均为 INT4，直接一次量化
@@ -435,25 +504,34 @@ class GPTQSubmatrixMixed(GPTQ):
                     n_int4_segments += nrow
 
                 elif block_col < ncol and col_is_all_int8[block_col]:
-                    # 快速路径：该列所有行块均为 INT8，直接一次量化
-                    q = _int8_fakequant_column(w)
+                    # 快速路径：该列所有行块均为 INT8。
+                    # 使用缓存的 per-row scale（粒度 (1, bcol)）做 fake-quant。
+                    scale_row = int8_scale_cache[block_col]  # (d_out,)
+                    q_int = torch.clamp(torch.round(w / scale_row), -128, 127)
+                    q = q_int * scale_row
                     n_int8_segments += nrow
 
                 else:
-                    # 混合列：先做整列 INT4，再对 INT8 行段覆盖
+                    # 混合列：先做整列 INT4，再对 INT8 行段用缓存 scale 覆盖
                     q = quantize(
                         w.unsqueeze(1),
                         self.quantizer.scale,
                         self.quantizer.zero,
                         self.quantizer.maxq,
                     ).flatten()
+                    scale_row = int8_scale_cache.get(block_col, None)
                     n_int4_count = 0
                     n_int8_count = 0
                     for br in range(nrow):
                         if block_col < ncol and high_precision_mask[br, block_col]:
                             r0 = br * brow
                             r1 = min(r0 + brow, d_out)
-                            q[r0:r1] = _int8_fakequant_column(w[r0:r1])
+                            # 使用缓存的 per-row scale 段
+                            s_seg = scale_row[r0:r1]
+                            q_seg_int = torch.clamp(
+                                torch.round(w[r0:r1] / s_seg), -128, 127
+                            )
+                            q[r0:r1] = q_seg_int * s_seg
                             n_int8_count += 1
                         else:
                             n_int4_count += 1
@@ -485,6 +563,13 @@ class GPTQSubmatrixMixed(GPTQ):
             f"INT8 blocks: {n_int8_blocks}/{n_total_blocks}, "
             f"INT4 segments: {n_int4_segments}, INT8 segments: {n_int8_segments}"
         )
+        print(f"  granularity=(1, {bcol})")
+        logger.info(
+            f"mode: submatrix_mixed, grid={nrow}x{ncol}, "
+            f"INT8 blocks: {n_int8_blocks}/{n_total_blocks}, "
+            f"INT4 segments: {n_int4_segments}, INT8 segments: {n_int8_segments}"
+        )
+        logger.info(f"granularity=(1, {bcol})")
 
         # ---- 列顺序还原 ----
         if actorder:
@@ -506,6 +591,10 @@ class GPTQSubmatrixMixed(GPTQ):
         else:
             top5_list = []
 
+        # ---- 统一粒度诊断字段 ----
+        # INT4 与 INT8 的 scale 统一为 (1, bcol) 粒度，形状第二维同为 ceil(d_in / bcol)
+        n_groups_per_row = math.ceil(d_in / bcol)
+
         # 返回诊断统计信息
         stats = {
             "gptq_loss": gptq_loss,
@@ -519,6 +608,9 @@ class GPTQSubmatrixMixed(GPTQ):
             "block_shape": list(block_shape),
             "budget_ratio": budget_ratio,
             "sensitivity_metric": sensitivity_metric,
+            "quant_granularity": f"(1, {bcol})",
+            "scale_shape_int4": [d_out, n_groups_per_row],
+            "scale_shape_int8": [d_out, n_groups_per_row],
         }
 
         return stats

@@ -179,6 +179,18 @@ def parse_args():
     if args.block_cols <= 0:
         parser.error(f"--block-cols 必须为正整数，当前值: {args.block_cols}")
 
+    # 统一粒度模式：groupsize 必须等于 block_cols，且不允许 per-channel (-1)
+    if args.groupsize == -1:
+        parser.error(
+            f"统一粒度模式下不允许 --groupsize=-1（per-channel），"
+            f"请显式设置 --groupsize == --block-cols ({args.block_cols})"
+        )
+    if args.groupsize != args.block_cols:
+        parser.error(
+            f"统一粒度模式下要求 --groupsize == --block-cols，"
+            f"当前 groupsize={args.groupsize}, block_cols={args.block_cols}"
+        )
+
     return args
 
 
@@ -209,12 +221,14 @@ def qwen3_sequential_submatrix_mixed(model, dataloader, dev: torch.device, args)
     print(f"  percentile_k={args.percentile_k}")
     print(f"  groupsize={args.groupsize}, percdamp={args.percdamp}, act_order={act_order}")
     print(f"  use_standard_quantizer={args.use_standard_quantizer}")
+    print(f"  granularity=(1, {args.block_cols})")
     print("=" * 60)
 
     logger.info(
         f"Submatrix Mixed Precision: block_shape=({args.block_rows},{args.block_cols}), "
         f"budget_ratio={args.budget_ratio}, metric={args.sensitivity_metric}"
     )
+    logger.info(f"granularity=(1, {args.block_cols})")
 
     use_cache = model.config.use_cache
     model.config.use_cache = False

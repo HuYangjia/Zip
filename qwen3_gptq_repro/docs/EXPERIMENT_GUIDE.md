@@ -4,6 +4,31 @@
 
 ---
 
+## 0. ⚠️ 铁律：V7 / V9 量化命令的 7 个必选参数
+
+> 本节是 2026-04-23 CLIP-bug 事故后固化的防御规则，详情见
+> [`POSTMORTEM_V7_V9_CLIP_BUG.md`](./POSTMORTEM_V7_V9_CLIP_BUG.md)。
+>
+> **在运行任何 V7 (`qwen3_gptq_tail_absorb.py`) 或 V9 (`qwen3_gptq_submatrix_mixed.py`)
+> 命令时，下表 7 条参数必须全部显式出现**。历史上每一次漏掉任一条都导致 PPL 从 ~10.3
+> 爆到 ~180~345。基线 `qwen3_gptq.py` 不受此影响（它只需要默认值即可）。
+
+| # | 参数 | 必须写成 | 漏掉后的后果 |
+|---|------|---------|-------------|
+| 1 | `--nsamples` | `128` | 脚本默认 32，Hessian 欠估计 → PPL×17 |
+| 2 | `--seqlen` | `2048` | 脚本默认 1024，同上 |
+| 3 | `--groupsize` | `128` | 与 `block-cols`/g128 scale 对齐被破坏 |
+| 4 | `--percdamp` | `0.01` | 默认已是 0.01，显式写出便于审计 |
+| 5 | `--true-sequential`（V7） | 必传 | 层内投影残差传播顺序偏离基线语义 |
+| 6 | `--use-standard-quantizer`（V7/V9） | 必传 | 否则走 `PercentileQuantizer(k=75)`，25% 权重被截断，`clip_ratio=0.2500` 恒定 |
+| 7 | act-order | 默认开启（不传 `--no-act-order`） | 跳过 act-order 会让下游等效矩阵错位 |
+
+> 🗑️ **历史遗留说明**：`PercentileQuantizer` 是早期实验代码，已被证明有 bug，
+> 后续会从代码库移除。在它被移除前，第 6 条（`--use-standard-quantizer`）是**必须**的；
+> 移除之后本条自动失效，但其余 6 条仍需保留。
+
+---
+
 ## 1. Quick Start
 
 ### 环境配置
@@ -28,13 +53,15 @@ cd qwen3_gptq_repro
 python qwen3_smooth.py --model-dir /path/to/Qwen3-4B-Instruct-2507 \
     --output-dir output/smooth
 
-# Step 2: V9 量化（最佳配置）
+# Step 2: V9 量化（最佳配置，包含全部 7 个铁律参数）
 python qwen3_gptq_submatrix_mixed.py \
     --model-dir /path/to/Qwen3-4B-Instruct-2507 \
     --init-state-dict output/smooth/qwen3-4b-smooth-state_dict.pt \
     --output-dir output/exp_submatrix_mixed/b128x128_r10_qe \
-    --block-rows 128 --block-cols 128 --budget-ratio 0.10 \
-    --sensitivity-metric quant_error
+    --nsamples 128 --seqlen 2048 \
+    --block-rows 128 --block-cols 128 --groupsize 128 --percdamp 0.01 \
+    --budget-ratio 0.10 --sensitivity-metric quant_error \
+    --use-standard-quantizer
 
 # Step 3: 评估 PPL
 python benchmark/eval_ppl.py \
@@ -106,11 +133,17 @@ python benchmark/eval_ppl.py --model-dir $MODEL \
 
 ### 4.2 V7 Tail Absorb
 
+> ⚠️ 下列命令包含全部 7 个铁律参数（见 Section 0）。请不要把它们整合到 `COMMON_ARGS`
+> 变量里做"简化共用"——历史上 CLIP bug 就是这样被引入的。
+
 ```bash
 for RANK in 16 64 128; do
     python qwen3_gptq_tail_absorb.py --model-dir $MODEL \
         --init-state-dict $SMOOTH_PT \
         --output-dir output/exp_smooth_tail_absorb/from_smooth_r${RANK} \
+        --wbits 4 --nsamples 128 --seqlen 2048 \
+        --groupsize 128 --percdamp 0.01 \
+        --true-sequential --use-standard-quantizer \
         --tail-rank $RANK
     python benchmark/eval_ppl.py --model-dir $MODEL \
         --quant-weights output/exp_smooth_tail_absorb/from_smooth_r${RANK}/qwen3-4b-instruct-2507-gptq-4bit.pt \
@@ -120,13 +153,18 @@ done
 
 ### 4.3 V9 Submatrix Mixed Precision
 
+> ⚠️ 同样必须包含铁律参数。`--block-cols` 必须等于 `--groupsize`（都 =128），
+> 否则会打印 `WARNING: block_cols != groupsize`。
+
 ```bash
-# 单个实验
+# 单个实验（b128x128, r=10%, metric=quant_error）
 python qwen3_gptq_submatrix_mixed.py --model-dir $MODEL \
     --init-state-dict $SMOOTH_PT \
     --output-dir output/exp_submatrix_mixed/b128x128_r10_qe \
-    --block-rows 128 --block-cols 128 --budget-ratio 0.10 \
-    --sensitivity-metric quant_error
+    --nsamples 128 --seqlen 2048 \
+    --block-rows 128 --block-cols 128 --groupsize 128 --percdamp 0.01 \
+    --budget-ratio 0.10 --sensitivity-metric quant_error \
+    --use-standard-quantizer
 
 python benchmark/eval_ppl.py --model-dir $MODEL \
     --quant-weights output/exp_submatrix_mixed/b128x128_r10_qe/qwen3-4b-instruct-2507-gptq-4bit.pt \
@@ -179,6 +217,9 @@ python benchmark/eval_ppl.py --model-dir $MODEL \
 
 ## 8. 批量实验脚本模板
 
+> ⚠️ **关键约定**：本模板里所有量化命令都**显式**追加 7 个铁律参数（见 Section 0），
+> 不使用 `COMMON_ARGS` 做缩写；请不要在后续维护时把这些参数抽到变量里。
+
 ```bash
 #!/bin/bash
 export MODEL="/path/to/model"
@@ -193,10 +234,15 @@ for METRIC in quant_error hessian_weighted weight_norm; do
     OUTDIR="output/exp_submatrix_mixed/${TAG}"
 
     echo "=== Running: $TAG ==="
+    # NOTE: 不要删除 --nsamples/--seqlen/--groupsize/--percdamp/--use-standard-quantizer
+    #       这些参数漏掉任一项都会触发 CLIP bug（PPL 爆炸 17~33 倍）
     python qwen3_gptq_submatrix_mixed.py --model-dir $MODEL \
         --init-state-dict $SMOOTH_PT --output-dir $OUTDIR \
+        --nsamples 128 --seqlen 2048 \
         --block-rows $BROW --block-cols $BCOL \
-        --budget-ratio $RATIO --sensitivity-metric $METRIC
+        --groupsize 128 --percdamp 0.01 \
+        --budget-ratio $RATIO --sensitivity-metric $METRIC \
+        --use-standard-quantizer
 
     for AQ in none int8 "int4-g128"; do
         AQ_LABEL=$(echo $AQ | sed 's/none/Anone/' | sed 's/int8/A8/' | sed 's/int4-g128/A4g128/')
@@ -229,3 +275,10 @@ A: 强烈推荐。不对齐时脚本会打印 WARNING，量化精度可能下降
 
 **Q: 如何只跑 FP16 baseline？**
 A: `python benchmark/eval_ppl.py --model-dir $MODEL --label fp16_baseline_Anone --act-quant none`（不指定 `--quant-weights`）。
+
+**Q: V7/V9 量化后 PPL 突然从 10.x 飙到 180+ 了？**
+A: 命令里很可能漏了 Section 0 里的铁律参数之一。依次检查：
+  1. `grep -c "clip_ratio=0.2500" <量化日志>`，如果 >0 → 漏了 `--use-standard-quantizer`。
+  2. 确认 `--nsamples 128 --seqlen 2048` 都显式出现，没被默认覆盖。
+  3. V7 必须带 `--true-sequential`，V9 要显式 `--groupsize 128`。
+  完整复盘见 [`POSTMORTEM_V7_V9_CLIP_BUG.md`](./POSTMORTEM_V7_V9_CLIP_BUG.md)。

@@ -4,6 +4,61 @@
 
 ---
 
+## 0. Mandatory Quantization Arguments (READ FIRST)
+
+> **⚠️ Incident-hardened rule (2026-04-23).** Every invocation of
+> `qwen3_gptq_tail_absorb.py` (V7) or `qwen3_gptq_submatrix_mixed.py` (V9) **must**
+> include the 7 arguments below verbatim. Skipping any one of them is known to
+> trigger the CLIP bug and blow PPL from ~10.3 to ~180–345 (×17 to ×33).
+> Baseline `qwen3_gptq.py` is NOT affected — its defaults are safe; these guards only apply to V7/V9.
+
+| # | Argument | Required literal | Consequence if omitted |
+|---|----------|------------------|------------------------|
+| 1 | `--nsamples` | `128` | V7/V9 default = 32 → Hessian rank-deficient → PPL ×17 |
+| 2 | `--seqlen`   | `2048` | V7/V9 default = 1024 → same problem as #1 |
+| 3 | `--groupsize` | `128` | Breaks alignment with per-group scale and V9 `block_cols` |
+| 4 | `--percdamp` | `0.01` | Default is already 0.01; write it for audit clarity |
+| 5 | `--true-sequential` (V7 only) | present | Intra-layer residual propagation order must match baseline GPTQ semantics |
+| 6 | `--use-standard-quantizer` (V7/V9) | present | Selects `Quantizer` (min/max). Omitting falls back to `PercentileQuantizer(k=75)` which symmetrically clips 25% of weights (`clip_ratio=0.2500` printed on every layer). **This is the single biggest CLIP-bug trigger.** |
+| 7 | act-order | **do NOT pass `--no-act-order`** (default is ON) | Quantized weights are not permuted back; skipping act-order misaligns downstream equivalent matrices |
+
+> 🗑️ **Legacy note**: `PercentileQuantizer` is legacy experimental code and will be
+> removed from the codebase in a future commit. While it still exists, argument #6
+> above is **mandatory**. Once removed, arg #6 becomes a no-op (or disappears), but
+> the other 6 rules remain in effect. See [`POSTMORTEM_V7_V9_CLIP_BUG.md`](./POSTMORTEM_V7_V9_CLIP_BUG.md).
+
+### 0.1 Sanity checks to run BEFORE launching a V7/V9 job
+
+```bash
+# (a) verify the script exposes all necessary flags
+grep -q "use-standard-quantizer" qwen3_gptq_tail_absorb.py || { echo "V7 script missing --use-standard-quantizer"; exit 1; }
+grep -q "true-sequential"        qwen3_gptq_tail_absorb.py || { echo "V7 script missing --true-sequential";        exit 1; }
+grep -q "tail-rank"              qwen3_gptq_tail_absorb.py || { echo "V7 script missing --tail-rank";              exit 1; }
+grep -q "use-standard-quantizer" qwen3_gptq_submatrix_mixed.py || { echo "V9 script missing --use-standard-quantizer"; exit 1; }
+grep -q "block-rows"             qwen3_gptq_submatrix_mixed.py || { echo "V9 script missing --block-rows";             exit 1; }
+grep -q "sensitivity-metric"     qwen3_gptq_submatrix_mixed.py || { echo "V9 script missing --sensitivity-metric";     exit 1; }
+grep -q "results-file"           benchmark/eval_ppl.py         || { echo "eval_ppl.py missing --results-file";         exit 1; }
+```
+
+### 0.2 Sanity checks to run AFTER quantization
+
+```bash
+# (b) clip_ratio=0.2500 must NOT appear in V7/V9 quant logs
+for log in <path-to>/logs/quant_v*.log; do
+    n=$(grep -c "clip_ratio=0.2500" "$log" 2>/dev/null || echo 0)
+    if [ "$n" -gt 0 ]; then
+        echo "[FAIL] $log : CLIP bug recurrence ($n hits) — missing --use-standard-quantizer?"
+        exit 1
+    fi
+done
+
+# (c) every *_Anone PPL must be <= 15 (healthy range: ~10.3)
+awk '/_Anone/ && $NF+0 > 15 { print "[FAIL] PPL regression:", $0; bad=1 } END { exit bad }' \
+    output/benchmark/results.txt
+```
+
+---
+
 ## 1. Method Overview
 
 This repository implements three weight quantization schemes for Qwen3 models, all based on GPTQ with FakeQuant (quantize → dequantize, storing float16 weights):
@@ -256,14 +311,18 @@ Original Model (FP16)
 ```
 Smoothed Weights (.pt)
     │
-    └─ qwen3_gptq_tail_absorb.py --init-state-dict <smooth.pt> --tail-rank 16
+    └─ qwen3_gptq_tail_absorb.py --init-state-dict <smooth.pt> \
+           --wbits 4 --nsamples 128 --seqlen 2048 \
+           --groupsize 128 --percdamp 0.01 \
+           --true-sequential --use-standard-quantizer \
+           --tail-rank 16
          │  1. Load model + smooth weights
          │  2. Capture calibration data
          │  3. Layer-by-layer GPTQTailAbsorb:
          │     a. Collect Hessian
          │     b. fasterquant(tail_rank=16, actorder=True):
          │        - Act-order sort columns by Hessian diagonal (descending)
-         │        - Columns [0, d_in-16): 4-bit PercentileQuantizer FakeQuant
+         │        - Columns [0, d_in-16): 4-bit standard Quantizer FakeQuant
          │        - Columns [d_in-16, d_in): INT8 per-column FakeQuant
          │        - Both propagate error identically to standard GPTQ
          │        - invperm restores original column order
@@ -271,14 +330,19 @@ Smoothed Weights (.pt)
          └─ Output: exp_smooth_tail_absorb/from_smooth_r16/qwen3-4b-...-gptq-4bit.pt
 ```
 
+> ⚠️ The full argument list above is MANDATORY. See Section 0.
+
 ### 4.4 Pipeline: V9 Submatrix Mixed Precision (`v9_b128x128_r5_qe`)
 
 ```
 Smoothed Weights (.pt)
     │
     └─ qwen3_gptq_submatrix_mixed.py --init-state-dict <smooth.pt> \
-           --block-rows 128 --block-cols 128 --budget-ratio 0.05 \
-           --sensitivity-metric quant_error
+           --nsamples 128 --seqlen 2048 \
+           --block-rows 128 --block-cols 128 \
+           --groupsize 128 --percdamp 0.01 \
+           --budget-ratio 0.05 --sensitivity-metric quant_error \
+           --use-standard-quantizer
          │  1. Load model + smooth weights
          │  2. Capture calibration data
          │  3. Layer-by-layer GPTQSubmatrixMixed:
@@ -303,6 +367,97 @@ Smoothed Weights (.pt)
          │  4. Save state_dict + metadata.json
          └─ Output: exp_submatrix_mixed/qwen3-4b-...-gptq-4bit.pt
 ```
+
+> ⚠️ The full argument list above is MANDATORY. See Section 0.
+
+---
+
+## 4.5 Canonical Machine Runbook (autodl2 example)
+
+> Exact command strings that reproduced the 2026-04-23 healthy results for V7 and V9.
+> Copy verbatim; do NOT compress into `COMMON_ARGS` variables.
+
+```bash
+# ---- Path config (server-side) ----
+export AUTODL_DIR="/root/autodl-tmp"
+export MODEL_DIR="${AUTODL_DIR}/model/Qwen3-4B-Instruct-2507"
+export SMOOTH_STATE_DICT="${AUTODL_DIR}/model/smooth/smoothed_model_state_dict.pt"
+export PROJECT_DIR="${AUTODL_DIR}/Zip/qwen3_gptq_repro"
+export WIKITEXT2_DIR="${PROJECT_DIR}/data/wikitext2"
+export EVAL_OUTPUT_DIR="${PROJECT_DIR}/output/benchmark"
+export RESULTS_FILE="results_v7_v9_rerun.txt"
+cd "${PROJECT_DIR}"
+
+# ---- V7 Tail Absorb (rank = 16 / 64 / 128) ----
+for RANK in 16 64 128; do
+  python qwen3_gptq_tail_absorb.py \
+      --model-dir ${MODEL_DIR} \
+      --init-state-dict ${SMOOTH_STATE_DICT} \
+      --output-dir ${AUTODL_DIR}/output/v7_ta_r${RANK} \
+      --dtype float16 --seed 0 \
+      --wbits 4 --nsamples 128 --seqlen 2048 \
+      --groupsize 128 --percdamp 0.01 \
+      --true-sequential --use-standard-quantizer \
+      --tail-rank ${RANK}
+done
+
+# ---- V9 Submatrix Mixed (b128x128 / b64x128, budget=5%, metric=quant_error) ----
+for BR in 128 64; do
+  python qwen3_gptq_submatrix_mixed.py \
+      --model-dir ${MODEL_DIR} \
+      --init-state-dict ${SMOOTH_STATE_DICT} \
+      --output-dir ${AUTODL_DIR}/output/v9_b${BR}x128_r5_qe \
+      --dtype float16 --seed 0 \
+      --nsamples 128 --seqlen 2048 \
+      --block-rows ${BR} --block-cols 128 \
+      --groupsize 128 --percdamp 0.01 \
+      --budget-ratio 0.05 --sensitivity-metric quant_error \
+      --use-standard-quantizer
+done
+
+# ---- Evaluate (5 quant outputs × 4 activation modes = 20 experiments) ----
+for TAG in v7_ta_r16 v7_ta_r64 v7_ta_r128 v9_b128x128_r5_qe v9_b64x128_r5_qe; do
+  PT="${AUTODL_DIR}/output/${TAG}/qwen3-4b-instruct-2507-gptq-4bit.pt"
+  LABEL_PREFIX=$(echo ${TAG} | sed 's/^v7_ta_/smooth_ta_/')
+
+  python benchmark/eval_ppl.py --model-dir ${MODEL_DIR} --quant-weights ${PT} \
+      --local-wikitext2-dir ${WIKITEXT2_DIR} --act-quant none \
+      --label ${LABEL_PREFIX}_Anone \
+      --seqlen 2048 --dtype float16 \
+      --output-dir ${EVAL_OUTPUT_DIR} --results-file ${RESULTS_FILE}
+
+  python benchmark/eval_ppl.py --model-dir ${MODEL_DIR} --quant-weights ${PT} \
+      --local-wikitext2-dir ${WIKITEXT2_DIR} --act-quant int8 \
+      --label ${LABEL_PREFIX}_A8 \
+      --seqlen 2048 --dtype float16 \
+      --output-dir ${EVAL_OUTPUT_DIR} --results-file ${RESULTS_FILE}
+
+  python benchmark/eval_ppl.py --model-dir ${MODEL_DIR} --quant-weights ${PT} \
+      --local-wikitext2-dir ${WIKITEXT2_DIR} --act-quant int4-g128 \
+      --label ${LABEL_PREFIX}_A4g128 \
+      --seqlen 2048 --dtype float16 \
+      --output-dir ${EVAL_OUTPUT_DIR} --results-file ${RESULTS_FILE}
+
+  python benchmark/eval_ppl.py --model-dir ${MODEL_DIR} --quant-weights ${PT} \
+      --local-wikitext2-dir ${WIKITEXT2_DIR} --act-quant int4-g128 \
+      --act-quant-override down_proj:int8 \
+      --label ${LABEL_PREFIX}_A4g128_downA8 \
+      --seqlen 2048 --dtype float16 \
+      --output-dir ${EVAL_OUTPUT_DIR} --results-file ${RESULTS_FILE}
+done
+```
+
+**Expected healthy PPL** (match to within ±0.05):
+
+| Config | Anone | A8 | A4g128 | A4g128_downA8 |
+|--------|------:|---:|-------:|--------------:|
+| smooth_ta_r16     | 10.34 | 10.62 | 13.27 | 12.62 |
+| smooth_ta_r64     | 10.40 | 10.67 | 13.33 | 12.68 |
+| smooth_ta_r128    | 10.42 | 10.69 | 13.31 | 12.67 |
+| v9_b128x128_r5_qe | 10.41 | 10.68 | 13.28 | 12.66 |
+| v9_b64x128_r5_qe  | 10.50 | 10.77 | 13.45 | 12.82 |
+
+Red-alert threshold: any `*_Anone` > 15 → stop immediately, re-run Section 0.2 sanity checks.
 
 ---
 

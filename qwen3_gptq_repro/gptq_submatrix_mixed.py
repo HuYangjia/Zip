@@ -1,15 +1,88 @@
-"""
-子矩阵级混合精度 GPTQ 核心类（V9 Submatrix Mixed Precision）
+"""子矩阵级混合精度 GPTQ 核心类（V9 Submatrix Mixed Precision）。
 
-核心思想：
-- 将权重矩阵分割为 (brow × bcol) 的子矩阵网格
-- Phase 1：对每个子矩阵做 INT4 fake-quant，计算量化误差，选出 top-k% 作为 INT8 区域
-- Phase 2：在 GPTQ 逐列迭代中，根据 high_precision_mask 决定每个行段使用 INT4 还是 INT8
-- GPTQ 误差传播机制完全不变
+这个文件是算法实现模块, 不是命令行入口。通常由
+qwen3_gptq_submatrix_mixed.py import 后使用。它提供:
+  - compute_block_sensitivity(...): 计算每个子矩阵的敏感度并选出 INT8 blocks。
+  - GPTQSubmatrixMixed: 继承标准 GPTQ, 修改 fasterquant 实现 INT4/INT8 混合。
 
-与 V7 GPTQTailAbsorb 的唯一区别：
-  V7: is_int8_col = (col_idx >= tail_start)  — 固定列范围
-  V9: high_precision_mask[block_row, block_col] == True  — 自适应子矩阵位置
+核心思想:
+  1. 将权重矩阵分割为 (brow x bcol) 的子矩阵网格。
+  2. Phase 1: 对每个子矩阵评分, 选出 top budget_ratio 作为 INT8 区域。
+  3. Phase 2: 在 GPTQ 逐列迭代中, 根据 high_precision_mask 决定每个行段
+     使用 INT4 还是 INT8 fake-quant。
+  4. GPTQ 的 Hessian 误差传播机制保持不变。
+
+输入:
+  compute_block_sensitivity 的输入:
+    W: Linear 权重矩阵, 形状为 (d_out, d_in)。
+    block_shape: 子矩阵形状 (block_rows, block_cols)。
+    budget_ratio: INT8 block 比例, 范围 [0, 1]。
+    metric: quant_error / weight_norm / hessian_weighted。
+    quantizer: 4-bit quantizer, quant_error 和 hessian_weighted 需要。
+    H_diag: Hessian 对角线, hessian_weighted 需要。
+
+  GPTQSubmatrixMixed.fasterquant 的输入:
+    self.layer: 待量化的 nn.Linear/Conv1D/Conv2d 层。
+    self.H: 由 add_batch(...) 收集得到的 Hessian 统计。
+    self.quantizer: 已 configure 的 Quantizer 或 PercentileQuantizer。
+
+主要参数:
+  blocksize:
+    GPTQ 逐列循环的外层分块大小。
+  percdamp:
+    Hessian 阻尼比例。
+  groupsize:
+    INT4 group 粒度。本实现的统一粒度模式要求 groupsize == block_cols。
+  actorder:
+    是否按 Hessian 对角线启用 activation-order 排列。
+  static_groups:
+    是否预先为每个 group 生成 quantizer。
+  block_shape:
+    子矩阵形状 (brow, bcol)。
+  budget_ratio:
+    INT8 子矩阵预算比例。0 为全 INT4, 1 为全 INT8。
+  sensitivity_metric:
+    子矩阵选择指标, 支持 quant_error / weight_norm / hessian_weighted。
+
+使用示例:
+  这个文件没有 argparse/main, 不建议直接 python gptq_submatrix_mixed.py。
+  最常见的运行方式是通过 Qwen3 入口脚本:
+
+    cd /root/autodl-tmp/Zip/qwen3_gptq_repro
+    python qwen3_gptq_submatrix_mixed.py \
+      --model-dir /root/autodl-tmp/model/Qwen3-4B-Instruct-2507 \
+      --output-dir output/qwen3_submatrix_mixed_v9_example \
+      --block-rows 128 \
+      --block-cols 128 \
+      --groupsize 128 \
+      --budget-ratio 0.05 \
+      --sensitivity-metric quant_error
+
+  如果在代码中直接使用核心类, 大致流程是:
+
+    gptq = GPTQSubmatrixMixed(linear_layer)
+    gptq.quantizer = PercentileQuantizer(percentile_k=75.0)
+    gptq.quantizer.configure(4, perchannel=True, sym=False, mse=False)
+    for inp, out in calibration_batches:
+        gptq.add_batch(inp, out)
+    stats = gptq.fasterquant(
+        percdamp=0.01,
+        groupsize=128,
+        actorder=True,
+        block_shape=(128, 128),
+        budget_ratio=0.05,
+        sensitivity_metric="quant_error",
+    )
+
+输出:
+  fasterquant 会直接把 FakeQuant 后的浮点权重写回 self.layer.weight.data,
+  并返回 stats 字典, 包含 gptq_loss、grid_shape、n_int8_blocks、
+  n_total_blocks、n_int4_segments、n_int8_segments、top5_sensitivity_scores、
+  block_shape、budget_ratio、sensitivity_metric 和 scale 粒度等诊断字段。
+
+与 V7 GPTQTailAbsorb 的关键区别:
+  V7: is_int8_col = (col_idx >= tail_start), 固定尾部列范围。
+  V9: high_precision_mask[block_row, block_col] == True, 自适应选择任意子矩阵。
 """
 
 import copy

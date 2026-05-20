@@ -1,8 +1,0 @@
-WikiText-2 Perplexity Benchmark Results (V2 - Multi-Format ActQ)
-========================================================================================================================================================================
-Label                                                 PPL  ActQ                                Tokens     Time(s)  Dtype       Timestamp                   Quant Weights
-------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-v9_b128x128_r5_qe_Anone                           10.4101  none                                298862       36.69  float16     2026-04-17T16:14:56.017201  /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/exp_v9_variant1/qwen3-4b-instruct-2507-gptq-4bit.pt
-v9_b128x128_r5_qe_A8                              10.6780  int8                                298862       53.93  float16     2026-04-17T16:15:59.188230  /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/exp_v9_variant1/qwen3-4b-instruct-2507-gptq-4bit.pt
-v9_b128x128_r5_qe_A4g128                          13.2787  int4-g128                           298862       54.45  float16     2026-04-17T16:17:02.905246  /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/exp_v9_variant1/qwen3-4b-instruct-2507-gptq-4bit.pt
-v9_b128x128_r5_qe_A4g128_downA8                   12.6604  int4-g128+down_proj:int8            298862       54.35  float16     2026-04-17T16:18:06.474755  /home/zhou/Documents/yangjia/zip/qwen3_gptq_repro/output/exp_v9_variant1/qwen3-4b-instruct-2507-gptq-4bit.pt

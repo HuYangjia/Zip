@@ -42,6 +42,10 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 # ---------------------------------------------------------------------------
 _SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 _PROJECT_DIR = os.path.dirname(_SCRIPT_DIR)
+if _PROJECT_DIR not in sys.path:
+    sys.path.insert(0, _PROJECT_DIR)
+
+from smooth_block_quant import fake_quant_activation_int4_group_symmetric
 
 # ---------------------------------------------------------------------------
 # 1. CLI argument parsing
@@ -232,43 +236,7 @@ def fake_quantize_activation_int4_group(x: torch.Tensor, group_size: int) -> tor
     If hidden_dim is not evenly divisible by group_size, the last group is
     zero-padded before quantization and unpadded after dequantization.
     """
-    orig_shape = x.shape
-    hidden_dim = orig_shape[-1]
-
-    # Flatten to 2D: [N, hidden_dim]
-    x_2d = x.reshape(-1, hidden_dim)
-    N = x_2d.shape[0]
-
-    # Pad if necessary
-    remainder = hidden_dim % group_size
-    if remainder != 0:
-        pad_size = group_size - remainder
-        x_2d = F.pad(x_2d, (0, pad_size), value=0.0)
-        padded_hidden = x_2d.shape[-1]
-    else:
-        pad_size = 0
-        padded_hidden = hidden_dim
-
-    n_groups = padded_hidden // group_size
-
-    # Reshape to [N, n_groups, group_size]
-    x_grouped = x_2d.reshape(N, n_groups, group_size)
-
-    # Per-group scale
-    x_abs_max = x_grouped.abs().amax(dim=-1, keepdim=True)  # [N, n_groups, 1]
-    scale = x_abs_max / 7.0
-    scale = scale.clamp(min=1e-10)
-
-    # Quantize and dequantize
-    x_q = (x_grouped / scale).round().clamp(-7, 7)
-    x_dq = x_q * scale
-
-    # Reshape back and remove padding
-    x_dq = x_dq.reshape(N, padded_hidden)
-    if pad_size > 0:
-        x_dq = x_dq[:, :hidden_dim]
-
-    return x_dq.reshape(orig_shape)
+    return fake_quant_activation_int4_group_symmetric(x, group_size)
 
 
 def fake_quantize_activation(x: torch.Tensor, fmt: str, layer_name: str) -> torch.Tensor:
